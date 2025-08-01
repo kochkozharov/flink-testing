@@ -114,6 +114,7 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         this.mailboxExecutor = checkNotNull(mailboxExecutor);
         this.context = new Context<>();
         this.emitDownstream = sink instanceof SupportsCommitter;
+        LOG.info("SINK_SBER {}", sink);
 
         if (sink instanceof SupportsWriterState) {
             writerStateHandler =

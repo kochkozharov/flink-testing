@@ -851,4 +851,8 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                     : aggregatedWatermarkElement.watermark;
         }
     }
+
+    public Source<?, SplitT, EnumChkT> getSource() {
+        return source;
+    }
 }

@@ -299,6 +299,8 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
 
                     assignmentTracker.recordSplitAssignment(assignment);
                     assignSplitsToAttempts(assignment);
+                    logSourcesAndSinks();
+                    LOG.info("SBER_C1_EVENT");
                     return null;
                 },
                 String.format("Failed to assign splits %s due to ", assignment));
@@ -436,7 +438,8 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
         if (closed) {
             return;
         }
-
+        logSourcesAndSinks();
+        LOG.error("SBER_C2_EVENT");
         ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
         LOG.error(
                 "Exception while handling result from async call in {}. Triggering job failover.",
@@ -744,5 +747,19 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
         private void reset(int subtaskIndex) {
             gateways[subtaskIndex].clear();
         }
+    }
+
+    private void logSourcesAndSinks() {
+        List<String> sources = getCoordinatorContext().getCoordinatorStore().apply("sources", obj -> {
+            return (obj == null) ? Collections.emptyList() : (List<String>) obj;
+        });
+
+        LOG.info("All sources: {}", sources);
+
+        List<String> sinks = getCoordinatorContext().getCoordinatorStore().apply("sinks", obj -> {
+            return (obj == null) ? Collections.emptyList() : (List<String>) obj;
+        });
+
+        LOG.info("All sinks: {}", sinks);
     }
 }

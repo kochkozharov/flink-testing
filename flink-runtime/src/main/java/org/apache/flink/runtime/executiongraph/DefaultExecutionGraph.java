@@ -404,6 +404,21 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                 jobInformation.getJobId());
         // Trigger hook onCreated
         notifyJobStatusHooks(state, null);
+
+    }
+
+    private List<String> getSourceNames() {
+        return verticesInCreationOrder.stream()
+                .filter(ejv -> ejv.getJobVertex().isInputVertex())
+                .map(ejv -> ejv.getSourceCoordinators().stream().map(c -> c.getSource().toString()).collect(Collectors.joining(",")))
+                .collect(Collectors.toList());
+    }
+
+    private List<String> getSinkNames() {
+        return verticesInCreationOrder.stream()
+                .filter(ejv -> ejv.getJobVertex().isInputVertex())
+                .map(ejv -> ejv.getJobVertex().getName())
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -1162,6 +1177,16 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     current,
                     newState,
                     error);
+
+            if (state == JobStatus.RUNNING) {
+                coordinatorStore.compute("sources", (key, oldValue) -> {
+                    return new ArrayList<>(getSourceNames());
+                });
+
+                coordinatorStore.compute("sinks", (key, oldValue) -> {
+                    return new ArrayList<>(getSinkNames());
+                });
+            }
 
             stateTimestamps[newState.ordinal()] = System.currentTimeMillis();
             notifyJobStatusChange(newState);
