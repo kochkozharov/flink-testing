@@ -21,6 +21,7 @@ package org.apache.flink.runtime.source.coordinator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.connector.source.ReaderInfo;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceSplit;
@@ -39,6 +40,7 @@ import org.apache.flink.runtime.source.event.AddSplitEvent;
 import org.apache.flink.runtime.source.event.IsProcessingBacklogEvent;
 import org.apache.flink.runtime.source.event.NoMoreSplitsEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
+import org.apache.flink.runtime.util.ConnectorRegistry;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.TernaryBoolean;
@@ -49,6 +51,7 @@ import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -750,16 +753,10 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
     }
 
     private void logSourcesAndSinks() {
-        List<String> sources = getCoordinatorContext().getCoordinatorStore().apply("sources", obj -> {
-            return (obj == null) ? Collections.emptyList() : (List<String>) obj;
-        });
+        JobID curJobID = (JobID) getCoordinatorContext().getCoordinatorStore().get("JobID");
+        LOG.info("All sources: {}", ConnectorRegistry.getInstance().getAllSources(curJobID));
+        LOG.info("All sinks: {}", ConnectorRegistry.getInstance().getAllSinks(curJobID));
+        LOG.info("JOBIDD_PRINT {}", curJobID.hashCode());
 
-        LOG.info("All sources: {}", sources);
-
-        List<String> sinks = getCoordinatorContext().getCoordinatorStore().apply("sinks", obj -> {
-            return (obj == null) ? Collections.emptyList() : (List<String>) obj;
-        });
-
-        LOG.info("All sinks: {}", sinks);
     }
 }

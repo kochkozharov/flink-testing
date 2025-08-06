@@ -24,6 +24,9 @@ import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.operators.coordination.OperatorEventHandler;
 import org.apache.flink.streaming.api.operators.StreamSink;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -32,6 +35,8 @@ import java.util.concurrent.CompletableFuture;
  * @param <IN> type of results to be written into the sink.
  */
 public class CollectSinkOperator<IN> extends StreamSink<IN> implements OperatorEventHandler {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CollectSinkOperator.class);
 
     private final CollectSinkFunction<IN> sinkFunction;
     // we need operator id to identify the coordinator of this operator,
@@ -43,6 +48,7 @@ public class CollectSinkOperator<IN> extends StreamSink<IN> implements OperatorE
         super(new CollectSinkFunction<>(serializer, maxBytesPerBatch, accumulatorName));
         this.sinkFunction = (CollectSinkFunction<IN>) getUserFunction();
         this.operatorIdFuture = new CompletableFuture<>();
+        LOG.info("GREPPER {}", this.getClass());
     }
 
     @Override

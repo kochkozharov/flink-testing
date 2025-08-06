@@ -77,6 +77,7 @@ public class CollectSinkOperatorCoordinator
 
     public CollectSinkOperatorCoordinator(int socketTimeout) {
         this.socketTimeout = socketTimeout;
+        LOG.info("GREPPER {}", this.getClass());
     }
 
     @Override

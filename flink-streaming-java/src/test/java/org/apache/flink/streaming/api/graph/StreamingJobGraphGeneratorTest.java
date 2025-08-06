@@ -433,7 +433,7 @@ class StreamingJobGraphGeneratorTest {
                         new Configuration(),
                         new ExecutionConfig(),
                         new CheckpointConfig(),
-                        SavepointRestoreSettings.forPath("hello"));
+                        SavepointRestoreSettings.forPath("hello"), Collections.emptyList());
 
         JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(streamGraph);
 

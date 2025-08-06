@@ -28,6 +28,7 @@ import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.dag.Pipeline;
+import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -135,16 +136,19 @@ public class StreamGraph implements Pipeline {
 
     private boolean autoParallelismEnabled;
 
+    private List<Transformation<?>> transformations;
+
     public StreamGraph(
             Configuration jobConfiguration,
             ExecutionConfig executionConfig,
             CheckpointConfig checkpointConfig,
-            SavepointRestoreSettings savepointRestoreSettings) {
+            SavepointRestoreSettings savepointRestoreSettings,
+            List<Transformation<?>> transformations) {
         this.jobConfiguration = new Configuration(checkNotNull(jobConfiguration));
         this.executionConfig = checkNotNull(executionConfig);
         this.checkpointConfig = checkNotNull(checkpointConfig);
         this.savepointRestoreSettings = checkNotNull(savepointRestoreSettings);
-
+        this.transformations = transformations;
         // create an empty new stream graph.
         clear();
     }
@@ -1063,5 +1067,9 @@ public class StreamGraph implements Pipeline {
         if (streamNode != null) {
             streamNode.setSupportsConcurrentExecutionAttempts(supportsConcurrentExecutionAttempts);
         }
+    }
+
+    public List<Transformation<?>> getTransformations() {
+        return transformations;
     }
 }

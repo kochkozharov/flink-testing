@@ -82,6 +82,7 @@ import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.StateBackendLoader;
 import org.apache.flink.runtime.taskmanager.DispatcherThreadFactory;
+import org.apache.flink.runtime.util.ConnectorRegistry;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
@@ -95,6 +96,7 @@ import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -405,19 +407,14 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         // Trigger hook onCreated
         notifyJobStatusHooks(state, null);
 
+        coordinatorStore.putIfAbsent("JobID", getJobID());
     }
 
     private List<String> getSourceNames() {
         return verticesInCreationOrder.stream()
                 .filter(ejv -> ejv.getJobVertex().isInputVertex())
-                .map(ejv -> ejv.getSourceCoordinators().stream().map(c -> c.getSource().toString()).collect(Collectors.joining(",")))
-                .collect(Collectors.toList());
-    }
-
-    private List<String> getSinkNames() {
-        return verticesInCreationOrder.stream()
-                .filter(ejv -> ejv.getJobVertex().isInputVertex())
-                .map(ejv -> ejv.getJobVertex().getName())
+                .flatMap(ejv -> ejv.getSourceCoordinators().stream())
+                .map(c -> c.getSource().toString())
                 .collect(Collectors.toList());
     }
 
@@ -1179,13 +1176,17 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     error);
 
             if (state == JobStatus.RUNNING) {
-                coordinatorStore.compute("sources", (key, oldValue) -> {
-                    return new ArrayList<>(getSourceNames());
-                });
-
-                coordinatorStore.compute("sinks", (key, oldValue) -> {
-                    return new ArrayList<>(getSinkNames());
-                });
+//                coordinatorStore.compute("sources", (key, oldValue) -> {
+//                    return new ArrayList<>(getSourceNames());
+//                });
+//
+//                coordinatorStore.compute("sinks", (key, oldValue) -> {
+//                    return new ArrayList<>(getSinkNames());
+//                });
+                List<String> sourceNames = getSourceNames();
+                LOG.info("SERB_{}", sourceNames);
+                ConnectorRegistry.getInstance().registerSources(getJobID(), sourceNames);
+                LOG.info("JOBIDD_SRC {}", getJobID().hashCode());
             }
 
             stateTimestamps[newState.ordinal()] = System.currentTimeMillis();

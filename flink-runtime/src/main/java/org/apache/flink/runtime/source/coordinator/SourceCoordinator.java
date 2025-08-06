@@ -853,6 +853,7 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
     }
 
     public Source<?, SplitT, EnumChkT> getSource() {
+
         return source;
     }
 }

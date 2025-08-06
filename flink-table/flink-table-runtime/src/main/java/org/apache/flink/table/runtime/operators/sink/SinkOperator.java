@@ -24,6 +24,7 @@ import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.InternalTimerService;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
+import org.apache.flink.streaming.api.operators.collect.CollectSinkOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -31,12 +32,17 @@ import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * A {@link StreamOperator} for executing {@link SinkFunction SinkFunctions}. This operator also
  * checks writing null values into NOT NULL columns.
  */
 public class SinkOperator extends AbstractUdfStreamOperator<Object, SinkFunction<RowData>>
         implements OneInputStreamOperator<RowData, Object> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SinkOperator.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -51,6 +57,7 @@ public class SinkOperator extends AbstractUdfStreamOperator<Object, SinkFunction
         super(sinkFunction);
         this.rowtimeFieldIndex = rowtimeFieldIndex;
         chainingStrategy = ChainingStrategy.ALWAYS;
+        LOG.info("GREPPER {}", this.getClass());
     }
 
     @Override

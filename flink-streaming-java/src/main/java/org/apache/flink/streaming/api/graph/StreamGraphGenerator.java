@@ -272,7 +272,7 @@ public class StreamGraphGenerator {
     public StreamGraph generate() {
         streamGraph =
                 new StreamGraph(
-                        configuration, executionConfig, checkpointConfig, savepointRestoreSettings);
+                        configuration, executionConfig, checkpointConfig, savepointRestoreSettings, transformations);
         shouldExecuteInBatchMode = shouldExecuteInBatchMode();
         configureStreamGraph(streamGraph);
 

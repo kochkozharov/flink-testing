@@ -43,11 +43,15 @@ import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.planner.functions.casting.RowDataToStringConverterImpl;
+import org.apache.flink.table.runtime.operators.sink.SinkOperator;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.utils.print.RowDataToStringConverter;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.ZoneId;
@@ -72,6 +76,9 @@ public final class CollectDynamicSink implements DynamicTableSink {
     private CollectResultIterator<RowData> iterator;
     private DataStructureConverter converter;
 
+    private static final Logger LOG = LoggerFactory.getLogger(CollectDynamicSink.class);
+
+
     CollectDynamicSink(
             ObjectIdentifier tableIdentifier,
             DataType consumedDataType,
@@ -89,6 +96,7 @@ public final class CollectDynamicSink implements DynamicTableSink {
         this.sessionZoneId = sessionZoneId;
         this.legacyCastBehaviour = legacyCastBehaviour;
         this.config = config;
+        LOG.info("GREPPER {}", this.getClass());
     }
 
     public ResultProvider getSelectResultProvider() {

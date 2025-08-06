@@ -63,6 +63,7 @@ public class RecreateOnResetOperatorCoordinator implements OperatorCoordinator {
         this.closingTimeoutMs = closingTimeoutMs;
         this.started = false;
         this.closed = false;
+        LOG.info("SBER_NEW {}", this.coordinator.internalCoordinator);
     }
 
     @Override
@@ -321,8 +322,8 @@ public class RecreateOnResetOperatorCoordinator implements OperatorCoordinator {
     private static class DeferrableCoordinator {
         private final OperatorID operatorId;
         private final BlockingQueue<NamedCall> pendingCalls;
-        private QuiesceableContext internalQuiesceableContext;
-        private OperatorCoordinator internalCoordinator;
+        public QuiesceableContext internalQuiesceableContext;
+        public OperatorCoordinator internalCoordinator;
         private boolean hasCaughtUp;
         private boolean closed;
         private volatile boolean failed;
