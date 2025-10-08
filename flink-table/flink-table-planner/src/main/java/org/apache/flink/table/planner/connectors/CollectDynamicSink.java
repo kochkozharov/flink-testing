@@ -43,7 +43,6 @@ import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.planner.functions.casting.RowDataToStringConverterImpl;
-import org.apache.flink.table.runtime.operators.sink.SinkOperator;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.utils.print.RowDataToStringConverter;
@@ -77,7 +76,6 @@ public final class CollectDynamicSink implements DynamicTableSink {
     private DataStructureConverter converter;
 
     private static final Logger LOG = LoggerFactory.getLogger(CollectDynamicSink.class);
-
 
     CollectDynamicSink(
             ObjectIdentifier tableIdentifier,

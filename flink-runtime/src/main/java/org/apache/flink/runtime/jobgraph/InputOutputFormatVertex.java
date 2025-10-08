@@ -27,6 +27,9 @@ import org.apache.flink.api.common.operators.util.UserCodeWrapper;
 import org.apache.flink.runtime.OperatorIDPair;
 import org.apache.flink.runtime.operators.util.TaskConfig;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +41,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * tries to deserialize input and output formats, and initialize and finalize them on master.
  */
 public class InputOutputFormatVertex extends JobVertex {
+    static final Logger LOG = LoggerFactory.getLogger(InputOutputFormatVertex.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -85,6 +89,7 @@ public class InputOutputFormatVertex extends JobVertex {
                                     + t.getMessage(),
                             t);
                 }
+                LOG.info("SBER_THERE_IT_IS {}", inputFormat);
 
                 setInputSplitSource(inputFormat);
             }
@@ -112,6 +117,8 @@ public class InputOutputFormatVertex extends JobVertex {
                     int executionParallelism = context.getExecutionParallelism();
                     ((InitializeOnMaster) outputFormat).initializeGlobal(executionParallelism);
                 }
+
+                LOG.info("SBER_TF {}", outputFormats);
             }
         } finally {
             // restore original classloader

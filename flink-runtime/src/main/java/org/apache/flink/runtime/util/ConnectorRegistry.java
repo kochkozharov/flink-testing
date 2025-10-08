@@ -19,9 +19,6 @@
 package org.apache.flink.runtime.util;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.connector.sink2.Sink;
-
-import org.apache.flink.api.connector.source.Source;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -35,28 +32,34 @@ public final class ConnectorRegistry {
 
     private ConnectorRegistry() {};
 
-    private static <T> void registerConnector(JobID jobId, T connector, ConcurrentMap<JobID, List<T>> connectors) {
-        connectors.compute(jobId, (key, oldValue) -> {
-            if (oldValue == null) {
-                List<T> newList = new ArrayList<>();
-                newList.add(connector);
-                return newList;
-            } else {
-                oldValue.add(connector);
-                return oldValue;
-            }
-        });
+    private static <T> void registerConnector(
+            JobID jobId, T connector, ConcurrentMap<JobID, List<T>> connectors) {
+        connectors.compute(
+                jobId,
+                (key, oldValue) -> {
+                    if (oldValue == null) {
+                        List<T> newList = new ArrayList<>();
+                        newList.add(connector);
+                        return newList;
+                    } else {
+                        oldValue.add(connector);
+                        return oldValue;
+                    }
+                });
     }
 
-    private static <T> void registerConnectors(JobID jobId, List<T> connectorList, ConcurrentMap<JobID, List<T>> connectors) {
-        connectors.compute(jobId, (key, oldValue) -> {
-            if (oldValue == null) {
-                return new ArrayList<T>(connectorList);
-            } else {
-                oldValue.addAll(connectorList);
-                return oldValue;
-            }
-        });
+    private static <T> void registerConnectors(
+            JobID jobId, List<T> connectorList, ConcurrentMap<JobID, List<T>> connectors) {
+        connectors.compute(
+                jobId,
+                (key, oldValue) -> {
+                    if (oldValue == null) {
+                        return new ArrayList<T>(connectorList);
+                    } else {
+                        oldValue.addAll(connectorList);
+                        return oldValue;
+                    }
+                });
     }
 
     public void registerSink(JobID jobId, String sink) {
@@ -88,6 +91,6 @@ public final class ConnectorRegistry {
     }
 
     private static class ConnectorRegistryHolder {
-        private final static ConnectorRegistry INSTANCE = new ConnectorRegistry();
+        private static final ConnectorRegistry INSTANCE = new ConnectorRegistry();
     }
 }

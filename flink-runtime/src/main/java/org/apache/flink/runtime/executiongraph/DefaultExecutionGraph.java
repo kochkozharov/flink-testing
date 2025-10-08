@@ -96,7 +96,6 @@ import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -412,9 +411,9 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
     private List<String> getSourceNames() {
         return verticesInCreationOrder.stream()
-                .filter(ejv -> ejv.getJobVertex().isInputVertex())
-                .flatMap(ejv -> ejv.getSourceCoordinators().stream())
-                .map(c -> c.getSource().toString())
+                .map(ExecutionJobVertex::getJobVertex)
+                .filter(JobVertex::isInputVertex)
+                .map(c -> c.getInputSplitSource().toString())
                 .collect(Collectors.toList());
     }
 
@@ -1176,14 +1175,15 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     error);
 
             if (state == JobStatus.RUNNING) {
-//                coordinatorStore.compute("sources", (key, oldValue) -> {
-//                    return new ArrayList<>(getSourceNames());
-//                });
-//
-//                coordinatorStore.compute("sinks", (key, oldValue) -> {
-//                    return new ArrayList<>(getSinkNames());
-//                });
+                //                coordinatorStore.compute("sources", (key, oldValue) -> {
+                //                    return new ArrayList<>(getSourceNames());
+                //                });
+                //
+                //                coordinatorStore.compute("sinks", (key, oldValue) -> {
+                //                    return new ArrayList<>(getSinkNames());
+                //                });
                 List<String> sourceNames = getSourceNames();
+                LOG.info("SBER_HMM {}", sourceNames);
                 LOG.info("SERB_{}", sourceNames);
                 ConnectorRegistry.getInstance().registerSources(getJobID(), sourceNames);
                 LOG.info("JOBIDD_SRC {}", getJobID().hashCode());

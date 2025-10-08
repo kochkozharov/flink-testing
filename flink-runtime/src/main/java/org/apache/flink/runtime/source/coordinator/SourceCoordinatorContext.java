@@ -51,7 +51,6 @@ import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -757,6 +756,5 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
         LOG.info("All sources: {}", ConnectorRegistry.getInstance().getAllSources(curJobID));
         LOG.info("All sinks: {}", ConnectorRegistry.getInstance().getAllSinks(curJobID));
         LOG.info("JOBIDD_PRINT {}", curJobID.hashCode());
-
     }
 }

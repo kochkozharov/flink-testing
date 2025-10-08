@@ -54,6 +54,7 @@ import org.apache.flink.util.DynamicCodeLoadingException;
 import org.apache.flink.util.SerializedValue;
 
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -71,6 +72,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * JobGraph}.
  */
 public class DefaultExecutionGraphBuilder {
+
+    static final Logger LOG = LoggerFactory.getLogger(DefaultExecutionGraphBuilder.class);
 
     public static DefaultExecutionGraph buildGraph(
             JobGraph jobGraph,
@@ -180,10 +183,11 @@ public class DefaultExecutionGraphBuilder {
         // file output formats create directories here, input formats create splits
 
         final long initMasterStart = System.nanoTime();
-        log.info("Running initialization on master for job {} ({}).", jobName, jobId);
+        log.info("Runnning initialization on master for job {} ({}).", jobName, jobId);
 
         for (JobVertex vertex : jobGraph.getVertices()) {
             String executableClass = vertex.getInvokableClassName();
+            LOG.info("SBER_TEST_LOADING {}", executableClass);
             if (executableClass == null || executableClass.isEmpty()) {
                 throw new JobSubmissionException(
                         jobId,

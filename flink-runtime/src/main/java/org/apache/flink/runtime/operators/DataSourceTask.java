@@ -140,7 +140,7 @@ public class DataSourceTask<OT> extends AbstractInvokable {
         }
 
         Counter completedSplitsCounter = ctx.getMetricGroup().counter("numSplitsProcessed");
-
+        LOG.info("SBER_DataSourceTask {}", format);
         if (RichInputFormat.class.isAssignableFrom(this.format.getClass())) {
             ((RichInputFormat) this.format).setRuntimeContext(ctx);
             LOG.debug(getLogString("Rich Source detected. Initializing runtime context."));

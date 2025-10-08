@@ -20,7 +20,6 @@ package org.apache.flink.streaming.runtime.translators;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.SupportsConcurrentExecutionAttempts;
 import org.apache.flink.api.common.operators.SlotSharingGroup;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -28,7 +27,6 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.configuration.CoreOptions;
-import org.apache.flink.runtime.util.ConnectorRegistry;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
 import org.apache.flink.streaming.api.connector.sink2.StandardSinkTopologies;
@@ -62,11 +60,7 @@ import java.util.function.Function;
 
 import static org.apache.flink.util.Preconditions.checkState;
 
-
-/**
- * A {@link TransformationTranslator} for the {@link
- * SinkTransformation}.
- */
+/** A {@link TransformationTranslator} for the {@link SinkTransformation}. */
 @Internal
 public class SinkTransformationTranslator<Input, Output>
         implements TransformationTranslator<Output, SinkTransformation<Input, Output>> {
@@ -243,16 +237,17 @@ public class SinkTransformationTranslator<Input, Output>
             }
             String sinkKey = "sinks";
             LOG.info("SERB_{}", sink);
-////            String oldValue = MDC.get(sinkKey);
-////            if (oldValue == null) {
-////                MDC.put(sinkKey, sink.toString());
-////            }
-////            else {
-////                MDC.put(sinkKey, oldValue + "," + sink);
-////            }
-//            JobID curJobID = context.getStreamGraph().getJobGraph().getJobID();
-//            LOG.info("JOBIDD_SINK {}", curJobID.hashCode());
-//            ConnectorRegistry.getInstance().registerSink(new JobID(12, 34), sink.toString());
+            ////            String oldValue = MDC.get(sinkKey);
+            ////            if (oldValue == null) {
+            ////                MDC.put(sinkKey, sink.toString());
+            ////            }
+            ////            else {
+            ////                MDC.put(sinkKey, oldValue + "," + sink);
+            ////            }
+            //            JobID curJobID = context.getStreamGraph().getJobGraph().getJobID();
+            //            LOG.info("JOBIDD_SINK {}", curJobID.hashCode());
+            //            ConnectorRegistry.getInstance().registerSink(new JobID(12, 34),
+            // sink.toString());
         }
 
         private <WriteResultT> DataStream<CommittableMessage<WriteResultT>> addWriter(
