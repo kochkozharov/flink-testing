@@ -323,7 +323,11 @@ public class Execution
     public Optional<InputSplit> getNextInputSplit() {
         final LogicalSlot slot = this.getAssignedResource();
         final String host = slot != null ? slot.getTaskManagerLocation().getHostname() : null;
-        return this.vertex.getNextInputSplit(host, getAttemptNumber());
+        Optional<InputSplit> vertex = this.vertex.getNextInputSplit(host, getAttemptNumber());
+        if (vertex.isPresent()) {
+            LOG.info("C1: {}", this.getClass());
+        }
+        return vertex;
     }
 
     @Override

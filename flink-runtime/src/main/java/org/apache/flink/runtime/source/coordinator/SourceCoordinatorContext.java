@@ -299,6 +299,7 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
 
                     assignmentTracker.recordSplitAssignment(assignment);
                     assignSplitsToAttempts(assignment);
+                    LOG.info("SBER_C1: {}", this.getClass());
                     return null;
                 },
                 String.format("Failed to assign splits %s due to ", assignment));
@@ -436,7 +437,7 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
         if (closed) {
             return;
         }
-
+        LOG.info("C2: {}", this.getClass());
         ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
         LOG.error(
                 "Exception while handling result from async call in {}. Triggering job failover.",
