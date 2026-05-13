@@ -537,6 +537,24 @@ public class KubernetesConfigOptions {
                                     + "Flink. A typical use-case is when one uses Flink Kubernetes "
                                     + "Operator.");
 
+    public static final ConfigOption<Boolean> KUBERNETES_ISTIO_VIRTUAL_SERVICE_ENABLED =
+            key("kubernetes.istio.virtual-service.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to create an Istio VirtualService for the JobManager REST"
+                                    + " endpoint as an accompanying resource of the JobManager"
+                                    + " Deployment.");
+
+    public static final ConfigOption<String> KUBERNETES_ISTIO_VIRTUAL_SERVICE_CLUSTER_HOST =
+            key("kubernetes.istio.virtual-service.cluster-host")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Kubernetes cluster DNS suffix used to build the VirtualService"
+                                    + " host as 'flink-ui-<namespace>.<cluster-host>'. Required"
+                                    + " when 'kubernetes.istio.virtual-service.enabled' is true.");
+
     public static final ConfigOption<Boolean> LOCAL_UPLOAD_ENABLED =
             ConfigOptions.key("kubernetes.artifacts.local-upload-enabled")
                     .booleanType()

@@ -39,6 +39,7 @@ import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.source.event.IsProcessingBacklogEvent;
 import org.apache.flink.runtime.source.event.ReaderRegistrationEvent;
+import org.apache.flink.runtime.source.event.ReaderStartedEvent;
 import org.apache.flink.runtime.source.event.ReportedWatermarkEvent;
 import org.apache.flink.runtime.source.event.RequestSplitEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
@@ -64,6 +65,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -120,6 +122,9 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
     private SplitEnumerator<SplitT, EnumChkT> enumerator;
     /** A flag marking whether the coordinator has started. */
     private boolean started;
+
+    /** Subtask indices that have successfully started their reader in the current attempt. */
+    private final Set<Integer> startedSubtasks = new HashSet<>();
 
     /**
      * An ID that the coordinator will register self in the coordinator store with. Other
@@ -309,6 +314,8 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                     } else if (event instanceof ReaderRegistrationEvent) {
                         handleReaderRegistrationEvent(
                                 subtask, attemptNumber, (ReaderRegistrationEvent) event);
+                    } else if (event instanceof ReaderStartedEvent) {
+                        handleReaderStartedEvent(subtask);
                     } else if (event instanceof ReportedWatermarkEvent) {
                         handleReportedWatermark(
                                 subtask,
@@ -328,11 +335,16 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
             int subtaskId, int attemptNumber, @Nullable Throwable reason) {
         runInEventLoop(
                 () -> {
-                    LOG.info(
-                            "Removing registered reader after failure for subtask {} (#{}) of source {}.",
+                    boolean hadStarted = startedSubtasks.remove(subtaskId);
+                    String phase = hadStarted ? "after start" : "during initialization";
+                    LOG.error(
+                            "Source reader for '{}' failed in subtask {} (attempt {}, {}): {}",
+                            operatorName,
                             subtaskId,
                             attemptNumber,
-                            operatorName);
+                            phase,
+                            reason != null ? reason.getMessage() : "unknown reason",
+                            reason);
 
                     context.unregisterSourceReader(subtaskId, attemptNumber);
                     context.attemptFailed(subtaskId, attemptNumber);
@@ -352,6 +364,7 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                             checkpointId,
                             operatorName);
 
+                    startedSubtasks.remove(subtaskId);
                     context.subtaskReset(subtaskId);
 
                     final List<SplitT> splitsToAddBack =
@@ -679,6 +692,16 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                 context.sendEventToSourceOperatorIfTaskReady(
                         subtask, new IsProcessingBacklogEvent(isBacklog));
             }
+        }
+    }
+
+    private void handleReaderStartedEvent(int subtask) {
+        startedSubtasks.add(subtask);
+        if (startedSubtasks.size() == context.currentParallelism()) {
+            LOG.info(
+                    "All {} readers for source '{}' started successfully.",
+                    context.currentParallelism(),
+                    operatorName);
         }
     }
 

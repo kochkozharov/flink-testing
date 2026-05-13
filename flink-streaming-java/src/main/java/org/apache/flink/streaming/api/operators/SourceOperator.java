@@ -45,6 +45,7 @@ import org.apache.flink.runtime.source.event.AddSplitEvent;
 import org.apache.flink.runtime.source.event.IsProcessingBacklogEvent;
 import org.apache.flink.runtime.source.event.NoMoreSplitsEvent;
 import org.apache.flink.runtime.source.event.ReaderRegistrationEvent;
+import org.apache.flink.runtime.source.event.ReaderStartedEvent;
 import org.apache.flink.runtime.source.event.ReportedWatermarkEvent;
 import org.apache.flink.runtime.source.event.RequestSplitEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
@@ -368,6 +369,7 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
         sourceMetricGroup.idlingStarted();
         // Start the reader after registration, sending messages in start is allowed.
         sourceReader.start();
+        operatorEventGateway.sendEventToCoordinator(new ReaderStartedEvent());
 
         eventTimeLogic.startPeriodicWatermarkEmits();
     }

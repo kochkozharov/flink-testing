@@ -28,6 +28,7 @@ import org.apache.flink.kubernetes.kubeclient.decorators.FlinkConfMountDecorator
 import org.apache.flink.kubernetes.kubeclient.decorators.HadoopConfMountDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.InitJobManagerDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.InternalServiceDecorator;
+import org.apache.flink.kubernetes.kubeclient.decorators.IstioVirtualServiceDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.KerberosMountDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.KubernetesStepDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.MountSecretsDecorator;
@@ -52,6 +53,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.kubernetes.configuration.KubernetesConfigOptions.KUBERNETES_HADOOP_CONF_MOUNT_DECORATOR_ENABLED;
+import static org.apache.flink.kubernetes.configuration.KubernetesConfigOptions.KUBERNETES_ISTIO_VIRTUAL_SERVICE_CLUSTER_HOST;
+import static org.apache.flink.kubernetes.configuration.KubernetesConfigOptions.KUBERNETES_ISTIO_VIRTUAL_SERVICE_ENABLED;
 import static org.apache.flink.kubernetes.configuration.KubernetesConfigOptions.KUBERNETES_KERBEROS_MOUNT_DECORATOR_ENABLED;
 
 /**
@@ -82,6 +85,15 @@ public class KubernetesJobManagerFactory {
         }
         if (configuration.get(KUBERNETES_KERBEROS_MOUNT_DECORATOR_ENABLED)) {
             stepDecorators.add(new KerberosMountDecorator(kubernetesJobManagerParameters));
+        }
+        if (configuration.get(KUBERNETES_ISTIO_VIRTUAL_SERVICE_ENABLED)) {
+            if (!configuration.getOptional(KUBERNETES_ISTIO_VIRTUAL_SERVICE_CLUSTER_HOST).isPresent()) {
+                throw new IllegalArgumentException(
+                        "Istio VirtualService is enabled but '"
+                                + KUBERNETES_ISTIO_VIRTUAL_SERVICE_CLUSTER_HOST.key()
+                                + "' is not set.");
+            }
+            stepDecorators.add(new IstioVirtualServiceDecorator(kubernetesJobManagerParameters));
         }
 
         stepDecorators.addAll(

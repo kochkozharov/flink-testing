@@ -34,6 +34,9 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.runtime.metrics.groups.InternalSinkWriterMetricGroup;
+import org.apache.flink.runtime.operators.coordination.OperatorEvent;
+import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
+import org.apache.flink.runtime.operators.coordination.OperatorEventHandler;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
@@ -76,7 +79,9 @@ import static org.apache.flink.util.Preconditions.checkState;
  * @param <CommT> the type of the committable (to send to downstream operators)
  */
 class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<CommittableMessage<CommT>>
-        implements OneInputStreamOperator<InputT, CommittableMessage<CommT>>, BoundedOneInput {
+        implements OneInputStreamOperator<InputT, CommittableMessage<CommT>>,
+                BoundedOneInput,
+                OperatorEventHandler {
 
     /**
      * To support state migrations from 1.14 where the sinkWriter and committer where part of the
@@ -108,6 +113,8 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
     private boolean endOfInput = false;
     private long lastKnownCheckpointId = INITIAL_CHECKPOINT_ID - 1;
 
+    @Nullable private OperatorEventGateway operatorEventGateway;
+
     SinkWriterOperator(
             Sink<InputT> sink,
             ProcessingTimeService processingTimeService,
@@ -131,6 +138,15 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         }
     }
 
+    void setOperatorEventGateway(OperatorEventGateway operatorEventGateway) {
+        this.operatorEventGateway = checkNotNull(operatorEventGateway);
+    }
+
+    @Override
+    public void handleOperatorEvent(OperatorEvent evt) {
+        // SinkLifecycleCoordinator does not send events to operators
+    }
+
     @Override
     public void initializeState(StateInitializationContext context) throws Exception {
         super.initializeState(context);
@@ -151,6 +167,9 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         }
 
         sinkWriter = writerStateHandler.createWriter(initContext, context);
+        if (operatorEventGateway != null) {
+            operatorEventGateway.sendEventToCoordinator(new WriterStartedEvent());
+        }
     }
 
     @Override

@@ -22,8 +22,12 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
+import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperatorFactory;
+import org.apache.flink.streaming.api.operators.CoordinatedOperatorFactory;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
@@ -42,7 +46,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public final class SinkWriterOperatorFactory<InputT, CommT>
         extends AbstractStreamOperatorFactory<CommittableMessage<CommT>>
         implements OneInputStreamOperatorFactory<InputT, CommittableMessage<CommT>>,
-                YieldingOperatorFactory<CommittableMessage<CommT>> {
+                YieldingOperatorFactory<CommittableMessage<CommT>>,
+                CoordinatedOperatorFactory<CommittableMessage<CommT>> {
 
     private final Sink<InputT> sink;
 
@@ -53,12 +58,20 @@ public final class SinkWriterOperatorFactory<InputT, CommT>
     public <T extends StreamOperator<CommittableMessage<CommT>>> T createStreamOperator(
             StreamOperatorParameters<CommittableMessage<CommT>> parameters) {
         try {
+            final OperatorID operatorId = parameters.getStreamConfig().getOperatorID();
+            final OperatorEventGateway gateway =
+                    parameters.getOperatorEventDispatcher().getOperatorEventGateway(operatorId);
+
             final SinkWriterOperator<InputT, CommT> writerOperator =
                     new SinkWriterOperator<>(sink, processingTimeService, getMailboxExecutor());
+            writerOperator.setOperatorEventGateway(gateway);
             writerOperator.setup(
                     parameters.getContainingTask(),
                     parameters.getStreamConfig(),
                     parameters.getOutput());
+            parameters
+                    .getOperatorEventDispatcher()
+                    .registerEventHandler(operatorId, writerOperator);
             return (T) writerOperator;
         } catch (Exception e) {
             throw new IllegalStateException(
@@ -66,6 +79,12 @@ public final class SinkWriterOperatorFactory<InputT, CommT>
                             + parameters.getStreamConfig().getOperatorName(),
                     e);
         }
+    }
+
+    @Override
+    public OperatorCoordinator.Provider getCoordinatorProvider(
+            String operatorName, OperatorID operatorID) {
+        return new SinkLifecycleCoordinator.Provider(operatorID, operatorName);
     }
 
     @Override
