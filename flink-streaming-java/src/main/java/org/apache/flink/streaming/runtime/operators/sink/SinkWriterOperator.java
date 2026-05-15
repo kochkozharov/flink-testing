@@ -197,7 +197,12 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         checkState(!endOfInput, "Received element after endOfInput: %s", element);
         context.element = element;
         sinkWriter.write(element.getValue(), context);
-        recordsProcessed = true;
+        if (!recordsProcessed) {
+            recordsProcessed = true;
+            // Fire here so the lifecycle log works in streaming jobs without checkpointing —
+            // there prepareSnapshotPreBarrier and endInput never run.
+            notifyWriterStartedIfNeeded();
+        }
     }
 
     @Override
@@ -225,7 +230,7 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         // operator received its first record from upstream — i.e. an upstream sink-side operator
         // already emitted a write result, which for Iceberg means at least one parquet was PUT to
         // object storage by IcebergStreamWriter.flush().
-        if (recordsProcessed || taskNumRecordsIn() > 0) {
+        if (taskNumRecordsIn() > 0) {
             writerStartedEventSent = true;
             operatorEventGateway.sendEventToCoordinator(new WriterStartedEvent());
         }
