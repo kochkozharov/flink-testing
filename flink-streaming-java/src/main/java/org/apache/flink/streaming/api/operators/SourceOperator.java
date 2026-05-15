@@ -448,14 +448,31 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
         } while (status == InputStatus.MORE_AVAILABLE
                 && canEmitBatchOfRecords.check()
                 && !shouldWaitForAlignment());
-        notifyReaderStartedIfNeeded(status);
+        notifyReaderStartedIfNeeded();
         return convertToInternalStatus(status);
     }
 
-    private void notifyReaderStartedIfNeeded(InputStatus status) {
-        if (!readerStartedEventSent && status == InputStatus.MORE_AVAILABLE) {
+    private void notifyReaderStartedIfNeeded() {
+        if (readerStartedEventSent) {
+            return;
+        }
+        long emitted = taskNumRecordsOut();
+        if (emitted > 0) {
             readerStartedEventSent = true;
             operatorEventGateway.sendEventToCoordinator(new ReaderStartedEvent());
+        }
+    }
+
+    private long taskNumRecordsOut() {
+        try {
+            return getContainingTask()
+                    .getEnvironment()
+                    .getMetricGroup()
+                    .getIOMetricGroup()
+                    .getNumRecordsOutCounter()
+                    .getCount();
+        } catch (Throwable t) {
+            return 0L;
         }
     }
 
@@ -473,7 +490,7 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
                 }
                 initializeMainOutput(output);
                 InputStatus firstStatus = sourceReader.pollNext(currentMainOutput);
-                notifyReaderStartedIfNeeded(firstStatus);
+                notifyReaderStartedIfNeeded();
                 return convertToInternalStatus(firstStatus);
             case SOURCE_STOPPED:
                 this.operatingMode = OperatingMode.DATA_FINISHED;
