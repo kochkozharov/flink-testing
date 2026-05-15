@@ -155,6 +155,9 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
 
     private boolean idle = false;
 
+    /** Whether we already notified the coordinator that this reader produced at least one record. */
+    private boolean readerStartedEventSent = false;
+
     /** The state that holds the currently assigned splits. */
     private ListState<SplitT> readerState;
 
@@ -369,7 +372,6 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
         sourceMetricGroup.idlingStarted();
         // Start the reader after registration, sending messages in start is allowed.
         sourceReader.start();
-        operatorEventGateway.sendEventToCoordinator(new ReaderStartedEvent());
 
         eventTimeLogic.startPeriodicWatermarkEmits();
     }
@@ -446,7 +448,15 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
         } while (status == InputStatus.MORE_AVAILABLE
                 && canEmitBatchOfRecords.check()
                 && !shouldWaitForAlignment());
+        notifyReaderStartedIfNeeded(status);
         return convertToInternalStatus(status);
+    }
+
+    private void notifyReaderStartedIfNeeded(InputStatus status) {
+        if (!readerStartedEventSent && status == InputStatus.MORE_AVAILABLE) {
+            readerStartedEventSent = true;
+            operatorEventGateway.sendEventToCoordinator(new ReaderStartedEvent());
+        }
     }
 
     private DataInputStatus emitNextNotReading(DataOutput<OUT> output) throws Exception {
@@ -462,7 +472,9 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
                             watermarkAlignmentParams.getUpdateInterval());
                 }
                 initializeMainOutput(output);
-                return convertToInternalStatus(sourceReader.pollNext(currentMainOutput));
+                InputStatus firstStatus = sourceReader.pollNext(currentMainOutput);
+                notifyReaderStartedIfNeeded(firstStatus);
+                return convertToInternalStatus(firstStatus);
             case SOURCE_STOPPED:
                 this.operatingMode = OperatingMode.DATA_FINISHED;
                 sourceMetricGroup.idlingStarted();

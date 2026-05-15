@@ -126,6 +126,9 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
     /** Subtask indices that have successfully started their reader in the current attempt. */
     private final Set<Integer> startedSubtasks = new HashSet<>();
 
+    /** Whether the "started successfully" log has already been emitted for this attempt. */
+    private boolean startedLogged = false;
+
     /**
      * An ID that the coordinator will register self in the coordinator store with. Other
      * coordinators may send events to this coordinator by the ID.
@@ -365,6 +368,9 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                             operatorName);
 
                     startedSubtasks.remove(subtaskId);
+                    if (startedSubtasks.isEmpty()) {
+                        startedLogged = false;
+                    }
                     context.subtaskReset(subtaskId);
 
                     final List<SplitT> splitsToAddBack =
@@ -697,11 +703,15 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
 
     private void handleReaderStartedEvent(int subtask) {
         startedSubtasks.add(subtask);
-        if (startedSubtasks.size() == context.currentParallelism()) {
+        // Fire once per attempt on the first reader that polled a real record. With multi-partition
+        // sources where some partitions are empty (e.g. all events landed on one Kafka partition)
+        // the strict "all N subtasks" gate would never trip.
+        if (!startedLogged) {
+            startedLogged = true;
             LOG.info(
-                    "All {} readers for source '{}' started successfully.",
-                    context.currentParallelism(),
-                    operatorName);
+                    "Source '{}' started reading successfully (first reader subtask {} produced real data).",
+                    operatorName,
+                    subtask);
         }
     }
 

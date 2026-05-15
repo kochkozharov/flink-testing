@@ -51,6 +51,9 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
     /** Subtask indices that have successfully started their writer in the current attempt. */
     private final Set<Integer> startedSubtasks = new HashSet<>();
 
+    /** Whether the "started successfully" log has already been emitted for this attempt. */
+    private boolean startedLogged = false;
+
     SinkLifecycleCoordinator(String operatorName, OperatorCoordinator.Context context) {
         this.operatorName = operatorName;
         this.context = context;
@@ -68,11 +71,15 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
             return;
         }
         startedSubtasks.add(subtask);
-        if (startedSubtasks.size() == context.currentParallelism()) {
+        // Fire once per attempt on the first subtask that confirms real writes. With sinks that
+        // funnel commits through subtask 0 (Iceberg uses .global() before its files-committer) the
+        // strict "all N subtasks" gate would never trip.
+        if (!startedLogged) {
+            startedLogged = true;
             LOG.info(
-                    "All {} writers for sink '{}' started successfully.",
-                    context.currentParallelism(),
-                    operatorName);
+                    "Sink '{}' started writing successfully (first subtask {} reported real data).",
+                    operatorName,
+                    subtask);
         }
     }
 
@@ -111,6 +118,7 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
     @Override
     public void resetToCheckpoint(long checkpointId, @Nullable byte[] checkpointData) {
         startedSubtasks.clear();
+        startedLogged = false;
     }
 
     // -------------------------------------------------------------------------

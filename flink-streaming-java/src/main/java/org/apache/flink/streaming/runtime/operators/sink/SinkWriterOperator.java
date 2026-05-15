@@ -115,6 +115,19 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
 
     @Nullable private OperatorEventGateway operatorEventGateway;
 
+    /** Whether at least one input record has been processed since (re-)initialization. */
+    private boolean recordsProcessed = false;
+
+    /** Whether we already notified the coordinator that this writer flushed real data. */
+    private boolean writerStartedEventSent = false;
+
+    /**
+     * When the sink has a committer, the lifecycle signal is fired from CommitterOperator instead
+     * (data physically reaching the committer is a stricter "write happened" signal, especially for
+     * sinks with custom pre-write topology like Iceberg).
+     */
+    private final boolean lifecycleSignaledByCommitter;
+
     SinkWriterOperator(
             Sink<InputT> sink,
             ProcessingTimeService processingTimeService,
@@ -123,6 +136,10 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         this.mailboxExecutor = checkNotNull(mailboxExecutor);
         this.context = new Context<>();
         this.emitDownstream = sink instanceof SupportsCommitter;
+        // Iceberg's legacy FlinkSink wires our SinkWriterOperator as the tail of the committer
+        // chain — there we still want to fire the lifecycle event (via task numRecordsIn), so
+        // never short-circuit purely on the SupportsCommitter check.
+        this.lifecycleSignaledByCommitter = false;
 
         if (sink instanceof SupportsWriterState) {
             writerStateHandler =
@@ -167,9 +184,6 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         }
 
         sinkWriter = writerStateHandler.createWriter(initContext, context);
-        if (operatorEventGateway != null) {
-            operatorEventGateway.sendEventToCoordinator(new WriterStartedEvent());
-        }
     }
 
     @Override
@@ -183,6 +197,7 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         checkState(!endOfInput, "Received element after endOfInput: %s", element);
         context.element = element;
         sinkWriter.write(element.getValue(), context);
+        recordsProcessed = true;
     }
 
     @Override
@@ -191,8 +206,42 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
         if (!endOfInput) {
             sinkWriter.flush(false);
             emitCommittables(checkpointId);
+            notifyWriterStartedIfNeeded();
         }
         // no records are expected to emit after endOfInput
+    }
+
+    private void notifyWriterStartedIfNeeded() {
+        if (lifecycleSignaledByCommitter) {
+            // CommitterOperator owns the lifecycle signal for sinks with a committer.
+            return;
+        }
+        if (writerStartedEventSent || operatorEventGateway == null) {
+            return;
+        }
+        // recordsProcessed catches the standard V2 path where data flows through this operator.
+        // taskNumRecordsIn() catches custom sink topologies (e.g. Iceberg's legacy FlinkSink chain
+        // where this operator is the tail of a chain headed by a custom committer): the chain-head
+        // operator received its first record from upstream — i.e. an upstream sink-side operator
+        // already emitted a write result, which for Iceberg means at least one parquet was PUT to
+        // object storage by IcebergStreamWriter.flush().
+        if (recordsProcessed || taskNumRecordsIn() > 0) {
+            writerStartedEventSent = true;
+            operatorEventGateway.sendEventToCoordinator(new WriterStartedEvent());
+        }
+    }
+
+    private long taskNumRecordsIn() {
+        try {
+            return getContainingTask()
+                    .getEnvironment()
+                    .getMetricGroup()
+                    .getIOMetricGroup()
+                    .getNumRecordsInCounter()
+                    .getCount();
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     @Override
@@ -210,6 +259,7 @@ class SinkWriterOperator<InputT, CommT> extends AbstractStreamOperator<Committab
             endOfInput = true;
             sinkWriter.flush(true);
             emitCommittables(lastKnownCheckpointId + 1);
+            notifyWriterStartedIfNeeded();
         }
     }
 
