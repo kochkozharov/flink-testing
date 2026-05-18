@@ -456,21 +456,15 @@ public class SourceOperator<OUT, SplitT extends SourceSplit> extends AbstractStr
         if (readerStartedEventSent) {
             return;
         }
-        long emitted = taskNumRecordsOut();
-        if (emitted > 0) {
+        if (operatorNumRecordsOut() > 0) {
             readerStartedEventSent = true;
             operatorEventGateway.sendEventToCoordinator(new ReaderStartedEvent());
         }
     }
 
-    private long taskNumRecordsOut() {
+    private long operatorNumRecordsOut() {
         try {
-            return getContainingTask()
-                    .getEnvironment()
-                    .getMetricGroup()
-                    .getIOMetricGroup()
-                    .getNumRecordsOutCounter()
-                    .getCount();
+            return getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter().getCount();
         } catch (Throwable t) {
             return 0L;
         }
