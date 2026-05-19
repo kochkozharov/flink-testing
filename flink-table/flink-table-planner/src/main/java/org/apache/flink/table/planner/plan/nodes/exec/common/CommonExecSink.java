@@ -146,6 +146,15 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
             int rowtimeFieldIndex,
             boolean upsertMaterialize,
             int[] inputUpsertKey) {
+        // Stash DDL connector options so the runtime SinkLifecycleCoordinator can include the real
+        // table/topic identifier in its log lines (application mode: planner is on the JM).
+        final java.util.Map<String, String> ddlOptions =
+                tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions();
+        org.apache.flink.runtime.connector.ConnectorOptionsRegistry.put(
+                tableSinkSpec.getContextResolvedTable().getIdentifier().asSummaryString(),
+                new org.apache.flink.runtime.connector.ConnectorOptionsRegistry.Entry(
+                        ddlOptions.get("connector"), ddlOptions));
+
         final ResolvedSchema schema = tableSinkSpec.getContextResolvedTable().getResolvedSchema();
         final SinkRuntimeProvider runtimeProvider =
                 tableSink.getSinkRuntimeProvider(

@@ -34,6 +34,7 @@ import org.apache.flink.api.connector.source.SupportsHandleExecutionAttemptSourc
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.runtime.connector.ConnectorOptionsRegistry;
 import org.apache.flink.runtime.operators.coordination.CoordinatorStore;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
@@ -340,14 +341,32 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                 () -> {
                     boolean hadStarted = startedSubtasks.remove(subtaskId);
                     String phase = hadStarted ? "after start" : "during initialization";
-                    LOG.error(
-                            "Source reader for '{}' failed in subtask {} (attempt {}, {}): {}",
-                            operatorName,
-                            subtaskId,
-                            attemptNumber,
-                            phase,
-                            reason != null ? reason.getMessage() : "unknown reason",
-                            reason);
+                    ConnectorOptionsRegistry.Entry meta =
+                            ConnectorOptionsRegistry.findForOperator(operatorName);
+                    // Flink only sometimes propagates a Throwable to executionAttemptFailed;
+                    // for many failure paths reason is null and the cause lives in the standard
+                    // task-failure log on JM.
+                    if (reason != null) {
+                        LOG.error(
+                                "Source reader for '{}' (connector={}, options={}) failed in subtask {} (attempt {}, {}): {}",
+                                operatorName,
+                                meta.getConnectorIdentifier(),
+                                meta.getOptions(),
+                                subtaskId,
+                                attemptNumber,
+                                phase,
+                                reason.getMessage(),
+                                reason);
+                    } else {
+                        LOG.error(
+                                "Source reader for '{}' (connector={}, options={}) failed in subtask {} (attempt {}, {}). Cause is logged separately by the task-failure handler.",
+                                operatorName,
+                                meta.getConnectorIdentifier(),
+                                meta.getOptions(),
+                                subtaskId,
+                                attemptNumber,
+                                phase);
+                    }
 
                     context.unregisterSourceReader(subtaskId, attemptNumber);
                     context.attemptFailed(subtaskId, attemptNumber);
@@ -708,9 +727,13 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
         // the strict "all N subtasks" gate would never trip.
         if (!startedLogged) {
             startedLogged = true;
+            ConnectorOptionsRegistry.Entry meta =
+                    ConnectorOptionsRegistry.findForOperator(operatorName);
             LOG.info(
-                    "Source '{}' started reading successfully (first reader subtask {} produced real data).",
+                    "Source '{}' (connector={}, options={}) started reading successfully (first reader subtask {} produced real data).",
                     operatorName,
+                    meta.getConnectorIdentifier(),
+                    meta.getOptions(),
                     subtask);
         }
     }

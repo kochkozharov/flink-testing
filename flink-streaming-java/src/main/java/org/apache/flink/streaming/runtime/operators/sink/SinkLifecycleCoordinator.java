@@ -19,6 +19,7 @@
 package org.apache.flink.streaming.runtime.operators.sink;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.connector.ConnectorOptionsRegistry;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
@@ -76,9 +77,13 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
         // strict "all N subtasks" gate would never trip.
         if (!startedLogged) {
             startedLogged = true;
+            ConnectorOptionsRegistry.Entry meta =
+                    ConnectorOptionsRegistry.findForOperator(operatorName);
             LOG.info(
-                    "Sink '{}' started writing successfully (first subtask {} reported real data).",
+                    "Sink '{}' (connector={}, options={}) started writing successfully (first subtask {} reported real data).",
                     operatorName,
+                    meta.getConnectorIdentifier(),
+                    meta.getOptions(),
                     subtask);
         }
     }
@@ -88,14 +93,32 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
             int subtask, int attemptNumber, @Nullable Throwable reason) {
         boolean hadStarted = startedSubtasks.remove(subtask);
         String phase = hadStarted ? "after start" : "during initialization";
-        LOG.error(
-                "Sink writer for '{}' failed in subtask {} (attempt {}, {}): {}",
-                operatorName,
-                subtask,
-                attemptNumber,
-                phase,
-                reason != null ? reason.getMessage() : "unknown reason",
-                reason);
+        ConnectorOptionsRegistry.Entry meta =
+                ConnectorOptionsRegistry.findForOperator(operatorName);
+        // Flink only sometimes propagates a Throwable to executionAttemptFailed — for many
+        // failure paths (e.g. TaskManager-side errors after the attempt has been marked failed)
+        // reason is null and the actual cause lives in the standard task-failure log on JM.
+        if (reason != null) {
+            LOG.error(
+                    "Sink writer for '{}' (connector={}, options={}) failed in subtask {} (attempt {}, {}): {}",
+                    operatorName,
+                    meta.getConnectorIdentifier(),
+                    meta.getOptions(),
+                    subtask,
+                    attemptNumber,
+                    phase,
+                    reason.getMessage(),
+                    reason);
+        } else {
+            LOG.error(
+                    "Sink writer for '{}' (connector={}, options={}) failed in subtask {} (attempt {}, {}). Cause is logged separately by the task-failure handler.",
+                    operatorName,
+                    meta.getConnectorIdentifier(),
+                    meta.getOptions(),
+                    subtask,
+                    attemptNumber,
+                    phase);
+        }
     }
 
     @Override

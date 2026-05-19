@@ -109,6 +109,15 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
     @Override
     protected Transformation<RowData> translateToPlanInternal(
             PlannerBase planner, ExecNodeConfig config) {
+        // Stash DDL connector options so the runtime SourceCoordinator can include the real
+        // table/topic identifier in its log lines (application mode: planner is on the JM).
+        final java.util.Map<String, String> ddlOptions =
+                tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions();
+        org.apache.flink.runtime.connector.ConnectorOptionsRegistry.put(
+                tableSourceSpec.getContextResolvedTable().getIdentifier().asSummaryString(),
+                new org.apache.flink.runtime.connector.ConnectorOptionsRegistry.Entry(
+                        ddlOptions.get("connector"), ddlOptions));
+
         final Transformation<RowData> sourceTransform;
         final StreamExecutionEnvironment env = planner.getExecEnv();
         final TransformationMetadata meta = createTransformationMeta(SOURCE_TRANSFORMATION, config);

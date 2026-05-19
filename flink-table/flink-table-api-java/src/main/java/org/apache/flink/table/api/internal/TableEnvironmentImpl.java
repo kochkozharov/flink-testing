@@ -120,6 +120,9 @@ import org.apache.flink.util.FlinkUserCodeClassLoaders;
 import org.apache.flink.util.MutableURLClassLoader;
 import org.apache.flink.util.Preconditions;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
@@ -143,6 +146,8 @@ import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_DML_SYN
  */
 @Internal
 public class TableEnvironmentImpl implements TableEnvironmentInternal {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TableEnvironmentImpl.class);
 
     // Flag that tells if the TableSource/TableSink used in this environment is stream table
     // source/sink,
@@ -1305,7 +1310,185 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
     }
 
     protected List<Transformation<?>> translate(List<ModifyOperation> modifyOperations) {
-        return planner.translate(modifyOperations);
+        // Pin the JobID we're translating for, so the registered connector options live in a
+        // ConnectorOptionsRegistry slot keyed by that same JobID — which the JobGraph will use
+        // (via PIPELINE_FIXED_JOB_ID) and which coordinators can later reclaim with clearJob.
+        Object pushed = beginRegistryScope();
+        try {
+            return planner.translate(modifyOperations);
+        } catch (Throwable t) {
+            // Classify failure as Sink-side or Source-side by scanning the cause chain
+            // for the first frame whose class or method name contains a side marker.
+            // If neither found — stay silent (Flink's own logging still kicks in).
+            String side = classifySide(t);
+            if (side != null) {
+                String summary =
+                        modifyOperations.stream()
+                                .map(TableEnvironmentImpl::describeSinkOperation)
+                                .collect(Collectors.joining(" || "));
+                LOG.error(
+                        "{}-side plan translation failed for {} operation(s):\n{}\nCause: {}",
+                        side,
+                        modifyOperations.size(),
+                        summary,
+                        t,
+                        t);
+            }
+            throw t;
+        } finally {
+            endRegistryScope(pushed);
+        }
+    }
+
+    /**
+     * Ensures a fixed JobID is set on the active configuration (so the planner-side registry and
+     * the eventual JobGraph share one key) and pushes it into the
+     * {@code ConnectorOptionsRegistry}'s per-thread scope. Returns the previous ThreadLocal value
+     * so {@link #endRegistryScope(Object)} can restore it for nested {@code translate()} calls.
+     */
+    private Object beginRegistryScope() {
+        try {
+            Configuration cfg = tableConfig.getConfiguration();
+            String jobIdHex = cfg.getString("$internal.pipeline.job-id", null);
+            org.apache.flink.api.common.JobID jobId;
+            if (jobIdHex == null || jobIdHex.isEmpty()) {
+                jobId = org.apache.flink.api.common.JobID.generate();
+                cfg.setString("$internal.pipeline.job-id", jobId.toHexString());
+            } else {
+                jobId = org.apache.flink.api.common.JobID.fromHexString(jobIdHex);
+            }
+            Class<?> registry =
+                    Class.forName("org.apache.flink.runtime.connector.ConnectorOptionsRegistry");
+            Object previous = registry.getMethod("getCurrentJob").invoke(null);
+            registry.getMethod("setCurrentJob", org.apache.flink.api.common.JobID.class)
+                    .invoke(null, jobId);
+            return previous; // may be null — endRegistryScope handles that
+        } catch (Throwable ignored) {
+            // Registry is best-effort; failure here must not break translation.
+            return null;
+        }
+    }
+
+    private void endRegistryScope(Object previousJobId) {
+        try {
+            Class<?> registry =
+                    Class.forName("org.apache.flink.runtime.connector.ConnectorOptionsRegistry");
+            if (previousJobId == null) {
+                registry.getMethod("clearCurrentJob").invoke(null);
+            } else {
+                registry.getMethod("setCurrentJob", org.apache.flink.api.common.JobID.class)
+                        .invoke(null, previousJobId);
+            }
+        } catch (Throwable ignored) {
+            // ignored — see beginRegistryScope
+        }
+    }
+
+    /**
+     * Renders a {@link ModifyOperation} for the plan-translation failure log. Adds physical
+     * connector identifier and WITH-options for both the sink ({@link SinkModifyOperation}) and
+     * every {@link SourceQueryOperation} reachable through the sink's child query tree — so
+     * on-call sees real targets ({@code table-name}, {@code topic}, {@code warehouse}) instead of
+     * just the Flink DDL aliases.
+     */
+    private static String describeSinkOperation(ModifyOperation op) {
+        StringBuilder sb = new StringBuilder(op.asSummaryString());
+        String sinkIdentifier = null;
+        if (op instanceof SinkModifyOperation) {
+            SinkModifyOperation sink = (SinkModifyOperation) op;
+            ContextResolvedTable ctx = sink.getContextResolvedTable();
+            sinkIdentifier = ctx.getIdentifier().asSummaryString();
+            appendConnectorLine(sb, "sink", sinkIdentifier, ctx.getResolvedTable().getOptions());
+            collectSources(sink.getChild(), sb);
+        }
+        // Fallback for SQL INSERT ... SELECT, where the child is a PlannerQueryOperation wrapping
+        // a Calcite RelNode (no SourceQueryOperation to walk). CommonExecTableSourceScan registers
+        // source options before CommonExecSink runs, so the registry has the sources by the time
+        // a sink-side translation failure fires here. Reflective call: flink-table-api-java does
+        // not depend on flink-runtime at compile time, but both jars share the parent classloader.
+        appendRegisteredEntries(sb, sinkIdentifier);
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void appendRegisteredEntries(StringBuilder sb, String sinkIdentifier) {
+        try {
+            Class<?> registry =
+                    Class.forName(
+                            "org.apache.flink.runtime.connector.ConnectorOptionsRegistry");
+            Class<?> entryClass =
+                    Class.forName(
+                            "org.apache.flink.runtime.connector.ConnectorOptionsRegistry$Entry");
+            Object snapshot = registry.getMethod("snapshot").invoke(null);
+            java.lang.reflect.Method getConnector =
+                    entryClass.getMethod("getConnectorIdentifier");
+            java.lang.reflect.Method getOptions = entryClass.getMethod("getOptions");
+            for (Map.Entry<String, Object> e :
+                    ((List<Map.Entry<String, Object>>) snapshot)) {
+                String identifier = e.getKey();
+                if (identifier.equals(sinkIdentifier)) {
+                    continue;
+                }
+                Object meta = e.getValue();
+                Map<String, String> opts = (Map<String, String>) getOptions.invoke(meta);
+                if (opts.isEmpty()) {
+                    continue;
+                }
+                sb.append("\n  registered=")
+                        .append(identifier)
+                        .append(", connector=")
+                        .append(getConnector.invoke(meta))
+                        .append(", options=")
+                        .append(opts);
+            }
+        } catch (Throwable ignored) {
+            // Best-effort: if the runtime jar is absent (e.g. unit tests on the API module),
+            // we still emit the sink line and the original cause.
+        }
+    }
+
+    private static void collectSources(QueryOperation query, StringBuilder sb) {
+        if (query == null) {
+            return;
+        }
+        if (query instanceof SourceQueryOperation) {
+            ContextResolvedTable ctx = ((SourceQueryOperation) query).getContextResolvedTable();
+            appendConnectorLine(
+                    sb,
+                    "source",
+                    ctx.getIdentifier().asSummaryString(),
+                    ctx.getResolvedTable().getOptions());
+        }
+        for (QueryOperation child : query.getChildren()) {
+            collectSources(child, sb);
+        }
+    }
+
+    private static void appendConnectorLine(
+            StringBuilder sb, String role, String identifier, Map<String, String> options) {
+        sb.append("\n  ")
+                .append(role)
+                .append('=')
+                .append(identifier)
+                .append(", connector=")
+                .append(options.get("connector"))
+                .append(", options=")
+                .append(options);
+    }
+
+    private static String classifySide(Throwable t) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            for (StackTraceElement el : cur.getStackTrace()) {
+                String s = el.getClassName() + "." + el.getMethodName();
+                if (s.contains("Sink")) {
+                    return "Sink";
+                }
+                if (s.contains("Source") || s.contains("Scan")) {
+                    return "Source";
+                }
+            }
+        }
+        return null;
     }
 
     @Override
