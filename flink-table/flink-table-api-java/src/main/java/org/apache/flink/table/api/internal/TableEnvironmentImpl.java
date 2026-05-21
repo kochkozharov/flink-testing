@@ -1305,6 +1305,16 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
     }
 
     protected List<Transformation<?>> translate(List<ModifyOperation> modifyOperations) {
+        // Pin a fresh JobID for this translation so CommonExecSink/Scan can register connector
+        // options under it and the JobGraph (stamped with the same PIPELINE_FIXED_JOB_ID by
+        // PipelineExecutorUtils) carries it to the runtime coordinators. Regenerated per call:
+        // each INSERT / StatementSet is its own job, and translate() is followed by submit before
+        // the next translate(), so there is no cross-statement collision.
+        tableConfig
+                .getConfiguration()
+                .setString(
+                        "$internal.pipeline.job-id",
+                        org.apache.flink.api.common.JobID.generate().toHexString());
         return planner.translate(modifyOperations);
     }
 

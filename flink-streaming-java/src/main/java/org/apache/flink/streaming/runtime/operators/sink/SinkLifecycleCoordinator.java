@@ -62,14 +62,7 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
     }
 
     @Override
-    public void start() {
-        // Register this sink under the job so its lifecycle events are audited per-connector.
-        org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
-                .registerSink(
-                        context.getJobID(),
-                        new org.apache.flink.runtime.connector.ConnectorRegistry.ConnectorInfo(
-                                null, operatorName, null));
-    }
+    public void start() {}
 
     @Override
     public void close() {}

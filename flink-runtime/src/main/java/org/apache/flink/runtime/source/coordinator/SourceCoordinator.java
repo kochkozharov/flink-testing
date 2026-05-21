@@ -227,13 +227,6 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
         // 'start()' wasn't called and where 'start()' failed.
         started = true;
 
-        // Register this source under the job so its lifecycle events are audited per-connector.
-        org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
-                .registerSource(
-                        context.getCoordinatorContext().getJobID(),
-                        new org.apache.flink.runtime.connector.ConnectorRegistry.ConnectorInfo(
-                                null, operatorName, null));
-
         // there are two ways the SplitEnumerator can get created:
         //  (1) Source.restoreEnumerator(), in which case the 'resetToCheckpoint()' method creates
         // it

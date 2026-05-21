@@ -174,6 +174,34 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
                             e.getMessage());
             throw e;
         }
+        // Sink created successfully → register its WITH-options under the pinned JobID so the
+        // runtime SinkLifecycleCoordinator can include them in C3/C4 (eager failures above never
+        // reach here, so they don't leave a stale entry).
+        config.getOptional(
+                        org.apache.flink.configuration.PipelineOptionsInternal
+                                .PIPELINE_FIXED_JOB_ID)
+                .ifPresent(
+                        jobIdHex -> {
+                            final java.util.Map<String, String> ddlOptions =
+                                    tableSinkSpec
+                                            .getContextResolvedTable()
+                                            .getResolvedTable()
+                                            .getOptions();
+                            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                                    .registerSink(
+                                            org.apache.flink.api.common.JobID.fromHexString(
+                                                    jobIdHex),
+                                            new org.apache.flink.runtime.connector.ConnectorRegistry
+                                                    .ConnectorInfo(
+                                                    null,
+                                                    tableSinkSpec
+                                                            .getContextResolvedTable()
+                                                            .getIdentifier()
+                                                            .asSummaryString(),
+                                                    ddlOptions.entrySet().stream()
+                                                            .map(en -> en.getKey() + "=" + en.getValue())
+                                                            .collect(java.util.stream.Collectors.toList())));
+                        });
         final RowType physicalRowType = getPhysicalRowType(schema);
         final int[] primaryKeys = getPrimaryKeyIndices(physicalRowType, schema);
         final int sinkParallelism = deriveSinkParallelism(inputTransform, runtimeProvider);

@@ -140,6 +140,33 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                             e.getMessage());
             throw e;
         }
+        // Source created successfully → register its WITH-options under the pinned JobID so the
+        // runtime SourceCoordinator can include them in C1/C2.
+        config.getOptional(
+                        org.apache.flink.configuration.PipelineOptionsInternal
+                                .PIPELINE_FIXED_JOB_ID)
+                .ifPresent(
+                        jobIdHex -> {
+                            final java.util.Map<String, String> ddlOptions =
+                                    tableSourceSpec
+                                            .getContextResolvedTable()
+                                            .getResolvedTable()
+                                            .getOptions();
+                            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                                    .registerSource(
+                                            org.apache.flink.api.common.JobID.fromHexString(
+                                                    jobIdHex),
+                                            new org.apache.flink.runtime.connector.ConnectorRegistry
+                                                    .ConnectorInfo(
+                                                    null,
+                                                    tableSourceSpec
+                                                            .getContextResolvedTable()
+                                                            .getIdentifier()
+                                                            .asSummaryString(),
+                                                    ddlOptions.entrySet().stream()
+                                                            .map(en -> en.getKey() + "=" + en.getValue())
+                                                            .collect(java.util.stream.Collectors.toList())));
+                        });
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
         if (provider instanceof SourceFunctionProvider) {
