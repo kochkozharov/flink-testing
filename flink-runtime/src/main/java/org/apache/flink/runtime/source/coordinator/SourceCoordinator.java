@@ -65,7 +65,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -123,11 +122,15 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
     /** A flag marking whether the coordinator has started. */
     private boolean started;
 
-    /** Subtask indices that have successfully started their reader in the current attempt. */
-    private final Set<Integer> startedSubtasks = new HashSet<>();
-
     /** Whether the "started successfully" log has already been emitted for this attempt. */
     private boolean startedLogged = false;
+
+    /**
+     * Whether a C2 (read-failed) has already been emitted for the current failure episode. Gates
+     * out the per-subtask multiplication: only the first failing subtask emits C2. Re-armed on a
+     * successful start.
+     */
+    private boolean failedLogged = false;
 
     /**
      * An ID that the coordinator will register self in the coordinator store with. Other
@@ -223,6 +226,13 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
         // we mark this as started first, so that we can later distinguish the cases where
         // 'start()' wasn't called and where 'start()' failed.
         started = true;
+
+        // Register this source under the job so its lifecycle events are audited per-connector.
+        org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                .registerSource(
+                        context.getCoordinatorContext().getJobID(),
+                        new org.apache.flink.runtime.connector.ConnectorRegistry.ConnectorInfo(
+                                null, operatorName, null));
 
         // there are two ways the SplitEnumerator can get created:
         //  (1) Source.restoreEnumerator(), in which case the 'resetToCheckpoint()' method creates
@@ -338,8 +348,7 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
             int subtaskId, int attemptNumber, @Nullable Throwable reason) {
         runInEventLoop(
                 () -> {
-                    boolean hadStarted = startedSubtasks.remove(subtaskId);
-                    String phase = hadStarted ? "after start" : "during initialization";
+                    String phase = startedLogged ? "after start" : "during initialization";
                     LOG.error(
                             "Source reader for '{}' failed in subtask {} (attempt {}, {}): {}",
                             operatorName,
@@ -348,6 +357,17 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                             phase,
                             reason != null ? reason.getMessage() : "unknown reason",
                             reason);
+
+                    // C2 — read failed. One per failure episode: gated so the other subtasks of
+                    // the same attempt don't each emit. Re-armed on a successful start.
+                    if (!failedLogged) {
+                        failedLogged = true;
+                        org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                                .writeC2Log(
+                                        context.getCoordinatorContext().getJobID(),
+                                        operatorName,
+                                        reason != null ? reason.getMessage() : null);
+                    }
 
                     context.unregisterSourceReader(subtaskId, attemptNumber);
                     context.attemptFailed(subtaskId, attemptNumber);
@@ -367,10 +387,8 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
                             checkpointId,
                             operatorName);
 
-                    startedSubtasks.remove(subtaskId);
-                    if (startedSubtasks.isEmpty()) {
-                        startedLogged = false;
-                    }
+                    // A partial subtask reset does not re-arm C1: reading hasn't fully stopped, and
+                    // a global failover recreates this coordinator (startedLogged=false) anyway.
                     context.subtaskReset(subtaskId);
 
                     final List<SplitT> splitsToAddBack =
@@ -702,16 +720,20 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT>
     }
 
     private void handleReaderStartedEvent(int subtask) {
-        startedSubtasks.add(subtask);
         // Fire once per attempt on the first reader that polled a real record. With multi-partition
         // sources where some partitions are empty (e.g. all events landed on one Kafka partition)
         // the strict "all N subtasks" gate would never trip.
         if (!startedLogged) {
             startedLogged = true;
+            // A successful start ends any prior failure episode, so the next failure logs again.
+            failedLogged = false;
             LOG.info(
                     "Source '{}' started reading successfully (first reader subtask {} produced real data).",
                     operatorName,
                     subtask);
+            // C1 — read started.
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .writeC1Log(context.getCoordinatorContext().getJobID(), operatorName);
         }
     }
 

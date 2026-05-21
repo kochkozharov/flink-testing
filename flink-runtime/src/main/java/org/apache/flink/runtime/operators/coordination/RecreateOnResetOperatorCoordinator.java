@@ -247,6 +247,11 @@ public class RecreateOnResetOperatorCoordinator implements OperatorCoordinator {
         }
 
         @Override
+        public org.apache.flink.api.common.JobID getJobID() {
+            return context.getJobID();
+        }
+
+        @Override
         public OperatorCoordinatorMetricGroup metricGroup() {
             return context.metricGroup();
         }

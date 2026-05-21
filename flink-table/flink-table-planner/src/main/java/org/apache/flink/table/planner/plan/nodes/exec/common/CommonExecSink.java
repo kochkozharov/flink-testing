@@ -147,10 +147,33 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
             boolean upsertMaterialize,
             int[] inputUpsertKey) {
         final ResolvedSchema schema = tableSinkSpec.getContextResolvedTable().getResolvedSchema();
-        final SinkRuntimeProvider runtimeProvider =
-                tableSink.getSinkRuntimeProvider(
-                        new SinkRuntimeProviderContext(
-                                isBounded, tableSinkSpec.getTargetColumns()));
+        final SinkRuntimeProvider runtimeProvider;
+        try {
+            runtimeProvider =
+                    tableSink.getSinkRuntimeProvider(
+                            new SinkRuntimeProviderContext(
+                                    isBounded, tableSinkSpec.getTargetColumns()));
+        } catch (Throwable e) {
+            // Eager sink-creation failure (e.g. ClickHouse JDBC auth) happens here, at plan
+            // translation — before the job/coordinator exists, so the runtime SinkLifecycle
+            // coordinator can't see it. We're inside this sink's own translation, so emit C4 for
+            // exactly this sink (no cross-sink confusion) and rethrow.
+            final java.util.Map<String, String> ddlOptions =
+                    tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions();
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .writeC4Log(
+                            null,
+                            tableSinkSpec
+                                    .getContextResolvedTable()
+                                    .getIdentifier()
+                                    .asSummaryString(),
+                            null,
+                            ddlOptions.entrySet().stream()
+                                    .map(en -> en.getKey() + "=" + en.getValue())
+                                    .collect(java.util.stream.Collectors.toList()),
+                            e.getMessage());
+            throw e;
+        }
         final RowType physicalRowType = getPhysicalRowType(schema);
         final int[] primaryKeys = getPrimaryKeyIndices(physicalRowType, schema);
         final int sinkParallelism = deriveSinkParallelism(inputTransform, runtimeProvider);

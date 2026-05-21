@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.operators.coordination;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.metrics.groups.OperatorCoordinatorMetricGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
@@ -259,6 +260,16 @@ public interface OperatorCoordinator extends CheckpointListener, AutoCloseable {
 
         /** Gets the ID of the operator to which the coordinator belongs. */
         OperatorID getOperatorId();
+
+        /**
+         * Gets the ID of the job to which the coordinator's operator belongs. Default returns
+         * {@code null} so existing (e.g. test) {@link Context} implementations keep compiling; the
+         * real JM-side context overrides it.
+         */
+        @javax.annotation.Nullable
+        default JobID getJobID() {
+            return null;
+        }
 
         /** Gets the metric group of the operator coordinator. */
         OperatorCoordinatorMetricGroup metricGroup();

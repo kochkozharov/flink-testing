@@ -537,6 +537,7 @@ public class OperatorCoordinatorHolder
         final LazyInitializedCoordinatorContext context =
                 new LazyInitializedCoordinatorContext(
                         opId,
+                        jobManagerJobMetricGroup.jobId(),
                         operatorName,
                         userCodeClassLoader,
                         operatorParallelism,
@@ -575,6 +576,7 @@ public class OperatorCoordinatorHolder
                 LoggerFactory.getLogger(LazyInitializedCoordinatorContext.class);
 
         private final OperatorID operatorId;
+        @Nullable private final org.apache.flink.api.common.JobID jobId;
         private final String operatorName;
         private final ClassLoader userCodeClassLoader;
         private final CoordinatorStore coordinatorStore;
@@ -590,6 +592,7 @@ public class OperatorCoordinatorHolder
 
         public LazyInitializedCoordinatorContext(
                 final OperatorID operatorId,
+                @Nullable final org.apache.flink.api.common.JobID jobId,
                 final String operatorName,
                 final ClassLoader userCodeClassLoader,
                 final int operatorParallelism,
@@ -597,6 +600,7 @@ public class OperatorCoordinatorHolder
                 final boolean supportsConcurrentExecutionAttempts,
                 final OperatorCoordinatorMetricGroup metricGroup) {
             this.operatorId = checkNotNull(operatorId);
+            this.jobId = jobId;
             this.operatorName = checkNotNull(operatorName);
             this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
             this.operatorParallelism = operatorParallelism;
@@ -637,6 +641,11 @@ public class OperatorCoordinatorHolder
         @Override
         public OperatorID getOperatorId() {
             return operatorId;
+        }
+
+        @Override
+        public org.apache.flink.api.common.JobID getJobID() {
+            return jobId;
         }
 
         @Override

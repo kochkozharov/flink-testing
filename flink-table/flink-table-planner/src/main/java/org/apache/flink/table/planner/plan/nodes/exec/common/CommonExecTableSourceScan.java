@@ -117,8 +117,29 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         final ScanTableSource tableSource =
                 tableSourceSpec.getScanTableSource(
                         planner.getFlinkContext(), ShortcutUtils.unwrapTypeFactory(planner));
-        ScanTableSource.ScanRuntimeProvider provider =
-                tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        final ScanTableSource.ScanRuntimeProvider provider;
+        try {
+            provider = tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        } catch (Throwable e) {
+            // Eager source-creation failure happens here, at plan translation — before the job /
+            // coordinator exists, so the runtime SourceCoordinator can't see it. We're inside this
+            // source's own translation, so emit C2 for exactly this source and rethrow.
+            final java.util.Map<String, String> ddlOptions =
+                    tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions();
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .writeC2Log(
+                            null,
+                            tableSourceSpec
+                                    .getContextResolvedTable()
+                                    .getIdentifier()
+                                    .asSummaryString(),
+                            null,
+                            ddlOptions.entrySet().stream()
+                                    .map(en -> en.getKey() + "=" + en.getValue())
+                                    .collect(java.util.stream.Collectors.toList()),
+                            e.getMessage());
+            throw e;
+        }
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
         if (provider instanceof SourceFunctionProvider) {

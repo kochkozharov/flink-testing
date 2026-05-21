@@ -1258,6 +1258,10 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     private void jobStatusChanged(final JobStatus newJobStatus) {
         validateRunsInMainThread();
         if (newJobStatus.isGloballyTerminalState()) {
+            // Reclaim per-connector audit state; the JobID slot would otherwise leak for the
+            // lifetime of the JVM (in session mode that means every job ever run).
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .clearJobConnectors(jobGraph.getJobID());
             CompletableFuture<Void> partitionPromoteFuture;
             if (newJobStatus == JobStatus.FINISHED) {
                 Collection<ResultPartitionID> jobPartitions =

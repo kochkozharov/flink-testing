@@ -28,8 +28,6 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -48,11 +46,15 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
     private final String operatorName;
     private final OperatorCoordinator.Context context;
 
-    /** Subtask indices that have successfully started their writer in the current attempt. */
-    private final Set<Integer> startedSubtasks = new HashSet<>();
-
     /** Whether the "started successfully" log has already been emitted for this attempt. */
     private boolean startedLogged = false;
+
+    /**
+     * Whether a C4 (write-failed) has already been emitted for the current failure episode. Gates
+     * out the per-subtask multiplication: only the first failing subtask emits C4. Re-armed on a
+     * successful start and on resetToCheckpoint.
+     */
+    private boolean failedLogged = false;
 
     SinkLifecycleCoordinator(String operatorName, OperatorCoordinator.Context context) {
         this.operatorName = operatorName;
@@ -60,7 +62,14 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
     }
 
     @Override
-    public void start() {}
+    public void start() {
+        // Register this sink under the job so its lifecycle events are audited per-connector.
+        org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                .registerSink(
+                        context.getJobID(),
+                        new org.apache.flink.runtime.connector.ConnectorRegistry.ConnectorInfo(
+                                null, operatorName, null));
+    }
 
     @Override
     public void close() {}
@@ -70,24 +79,27 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
         if (!(event instanceof WriterStartedEvent)) {
             return;
         }
-        startedSubtasks.add(subtask);
         // Fire once per attempt on the first subtask that confirms real writes. With sinks that
         // funnel commits through subtask 0 (Iceberg uses .global() before its files-committer) the
         // strict "all N subtasks" gate would never trip.
         if (!startedLogged) {
             startedLogged = true;
+            // A successful start ends any prior failure episode, so the next failure logs again.
+            failedLogged = false;
             LOG.info(
                     "Sink '{}' started writing successfully (first subtask {} reported real data).",
                     operatorName,
                     subtask);
+            // C3 — write started.
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .writeC3Log(context.getJobID(), operatorName);
         }
     }
 
     @Override
     public void executionAttemptFailed(
             int subtask, int attemptNumber, @Nullable Throwable reason) {
-        boolean hadStarted = startedSubtasks.remove(subtask);
-        String phase = hadStarted ? "after start" : "during initialization";
+        String phase = startedLogged ? "after start" : "during initialization";
         LOG.error(
                 "Sink writer for '{}' failed in subtask {} (attempt {}, {}): {}",
                 operatorName,
@@ -96,6 +108,17 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
                 phase,
                 reason != null ? reason.getMessage() : "unknown reason",
                 reason);
+
+        // C4 — write failed. One per failure episode: gated so the other subtasks of the same
+        // attempt don't each emit. Re-armed on a successful start / resetToCheckpoint.
+        if (!failedLogged) {
+            failedLogged = true;
+            org.apache.flink.runtime.connector.ConnectorRegistry.getInstance()
+                    .writeC4Log(
+                            context.getJobID(),
+                            operatorName,
+                            reason != null ? reason.getMessage() : null);
+        }
     }
 
     @Override
@@ -104,7 +127,8 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
 
     @Override
     public void subtaskReset(int subtask, long checkpointId) {
-        startedSubtasks.remove(subtask);
+        // A partial subtask reset does not re-arm C3: writing hasn't fully stopped. A global
+        // failover goes through resetToCheckpoint, which clears startedLogged.
     }
 
     @Override
@@ -117,8 +141,9 @@ class SinkLifecycleCoordinator implements OperatorCoordinator {
 
     @Override
     public void resetToCheckpoint(long checkpointId, @Nullable byte[] checkpointData) {
-        startedSubtasks.clear();
+        // Global failover: re-arm C3 (write-started) and C4 (write-failed) for the new episode.
         startedLogged = false;
+        failedLogged = false;
     }
 
     // -------------------------------------------------------------------------
