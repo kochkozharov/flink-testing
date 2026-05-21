@@ -34,6 +34,7 @@ import org.apache.flink.table.operations.OutputConversionModifyOperation.UpdateM
 import org.apache.flink.table.planner.JMap
 import org.apache.flink.table.planner.calcite._
 import org.apache.flink.table.planner.catalog.CatalogManagerCalciteSchema
+import org.apache.flink.table.planner.audit.EagerAudit
 import org.apache.flink.table.planner.connectors.DynamicSinkUtils
 import org.apache.flink.table.planner.connectors.DynamicSinkUtils.validateSchemaAndApplyImplicitCast
 import org.apache.flink.table.planner.hint.FlinkHints
@@ -174,10 +175,22 @@ abstract class PlannerBase(
       return List.empty[Transformation[_]]
     }
 
-    val relNodes = modifyOperations.map(translateToRel)
-    val optimizedRelNodes = optimize(relNodes)
-    val execGraph = translateToExecNodeGraph(optimizedRelNodes, isCompiled = false)
-    val transformations = translateToPlan(execGraph)
+    EagerAudit.begin()
+    val transformations =
+      try {
+        val relNodes = modifyOperations.map(translateToRel)
+        val optimizedRelNodes = optimize(relNodes)
+        val execGraph = translateToExecNodeGraph(optimizedRelNodes, isCompiled = false)
+        translateToPlan(execGraph)
+      } catch {
+        case t: Throwable =>
+          // Safety net for eager failures with no precise hook (optimize / exec-graph phases).
+          // Stays silent if a hook already emitted, so over-emit is not reintroduced.
+          EagerAudit.netFallback(modifyOperations, t)
+          throw t
+      } finally {
+        EagerAudit.clear()
+      }
     afterTranslation()
     transformations
   }
@@ -222,7 +235,10 @@ abstract class PlannerBase(
           stagedSink.getDynamicTableSink)
 
       case catalogSink: SinkModifyOperation =>
+        // input (source side) is built outside the try so a source failure here is not
+        // misattributed to the sink — the source's own toRel hook emits its C2.
         val input = createRelBuilder.queryOperation(modifyOperation.getChild).build()
+        try {
         val dynamicOptions = catalogSink.getDynamicOptions
         getTableSink(catalogSink.getContextResolvedTable, dynamicOptions).map {
           case (table, sink: TableSink[_]) =>
@@ -274,6 +290,13 @@ abstract class PlannerBase(
           case None =>
             throw new TableException(
               s"Sink '${catalogSink.getContextResolvedTable}' does not exists")
+        }
+        } catch {
+          case t: Throwable =>
+            // Eager sink failure during rel conversion: factory creation (getTableSink) or
+            // schema/cast validation (convertSinkToRel). Emit C4, deduped per translation.
+            EagerAudit.emitOnce(true, catalogSink.getContextResolvedTable, t.getMessage)
+            throw t
         }
 
       case externalModifyOperation: ExternalModifyOperation =>

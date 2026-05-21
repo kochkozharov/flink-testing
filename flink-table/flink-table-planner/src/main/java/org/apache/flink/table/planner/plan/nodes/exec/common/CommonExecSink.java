@@ -154,12 +154,10 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
                             new SinkRuntimeProviderContext(
                                     isBounded, tableSinkSpec.getTargetColumns()));
         } catch (Throwable e) {
-            // Eager sink-creation failure (e.g. ClickHouse auth) — happens during plan translation,
-            // before the job/coordinator exists. Emit C4 inline (jobId is null: no job yet).
-            org.apache.flink.runtime.audit.LifecycleAudit.writeFailed(
-                    null,
-                    tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions(),
-                    e.getMessage());
+            // Eager sink runtime-provider failure (e.g. ClickHouse auth) during exec-node
+            // translation, before the job/coordinator exists. Emit C4, deduped per translation.
+            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
+                    true, tableSinkSpec.getContextResolvedTable(), e.getMessage());
             throw e;
         }
         final RowType physicalRowType = getPhysicalRowType(schema);

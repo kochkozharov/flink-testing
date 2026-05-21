@@ -121,12 +121,10 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         try {
             provider = tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         } catch (Throwable e) {
-            // Eager source-creation failure — during plan translation, before the job exists.
-            // Emit C2 inline (jobId is null: no job yet).
-            org.apache.flink.runtime.audit.LifecycleAudit.readFailed(
-                    null,
-                    tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions(),
-                    e.getMessage());
+            // Eager source runtime-provider failure during exec-node translation, before the job
+            // exists. Emit C2, deduped per translation.
+            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
+                    false, tableSourceSpec.getContextResolvedTable(), e.getMessage());
             throw e;
         }
         final int sourceParallelism = deriveSourceParallelism(provider);

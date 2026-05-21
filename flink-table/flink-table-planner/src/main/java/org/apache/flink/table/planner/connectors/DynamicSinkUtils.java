@@ -198,15 +198,24 @@ public final class DynamicSinkUtils {
             RelNode input,
             SinkModifyOperation sinkModifyOperation,
             DynamicTableSink sink) {
-        return convertSinkToRel(
-                relBuilder,
-                input,
-                sinkModifyOperation.getDynamicOptions(),
-                sinkModifyOperation.getContextResolvedTable(),
-                sinkModifyOperation.getStaticPartitions(),
-                sinkModifyOperation.getTargetColumns(),
-                sinkModifyOperation.isOverwrite(),
-                sink);
+        try {
+            return convertSinkToRel(
+                    relBuilder,
+                    input,
+                    sinkModifyOperation.getDynamicOptions(),
+                    sinkModifyOperation.getContextResolvedTable(),
+                    sinkModifyOperation.getStaticPartitions(),
+                    sinkModifyOperation.getTargetColumns(),
+                    sinkModifyOperation.isOverwrite(),
+                    sink);
+        } catch (Throwable e) {
+            // Eager sink failure during rel conversion (e.g. schema/column-count mismatch) — thrown
+            // in PlannerBase.translateToRel. Emit C4, deduped per translation (the PlannerBase
+            // sink-block hook also covers this path; whichever fires first wins).
+            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
+                    true, sinkModifyOperation.getContextResolvedTable(), e.getMessage());
+            throw e;
+        }
     }
 
     private static RelNode convertSinkToRel(

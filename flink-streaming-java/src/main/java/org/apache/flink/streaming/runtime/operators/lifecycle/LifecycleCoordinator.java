@@ -19,8 +19,10 @@
 package org.apache.flink.streaming.runtime.operators.lifecycle;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.audit.LifecycleAudit;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.metrics.scope.ScopeFormat;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 
@@ -44,13 +46,15 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
     private final boolean sink;
     private final Map<String, String> options;
+    @Nullable private final JobID jobId;
 
     private boolean startedLogged;
     private boolean failedLogged;
 
-    LifecycleCoordinator(boolean sink, Map<String, String> options) {
+    LifecycleCoordinator(boolean sink, Map<String, String> options, @Nullable JobID jobId) {
         this.sink = sink;
         this.options = options;
+        this.jobId = jobId;
     }
 
     @Override
@@ -67,9 +71,9 @@ final class LifecycleCoordinator implements OperatorCoordinator {
         startedLogged = true;
         failedLogged = false; // a fresh successful start re-arms failure logging
         if (sink) {
-            LifecycleAudit.writeStarted(null, options);
+            LifecycleAudit.writeStarted(jobId, options);
         } else {
-            LifecycleAudit.readStarted(null, options);
+            LifecycleAudit.readStarted(jobId, options);
         }
     }
 
@@ -81,9 +85,9 @@ final class LifecycleCoordinator implements OperatorCoordinator {
         failedLogged = true;
         final String msg = reason != null ? reason.getMessage() : null;
         if (sink) {
-            LifecycleAudit.writeFailed(null, options, msg);
+            LifecycleAudit.writeFailed(jobId, options, msg);
         } else {
-            LifecycleAudit.readFailed(null, options, msg);
+            LifecycleAudit.readFailed(jobId, options, msg);
         }
     }
 
@@ -129,7 +133,23 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
         @Override
         public OperatorCoordinator create(Context context) {
-            return new LifecycleCoordinator(sink, options);
+            return new LifecycleCoordinator(sink, options, jobIdFrom(context));
+        }
+
+        /**
+         * The runtime {@link JobID} is not exposed on {@link Context} directly, but the coordinator's
+         * metric group carries it as the {@code <job_id>} scope variable. Best-effort: returns null
+         * if unavailable (e.g. session mode), so audit just falls back to UNDEFINED.
+         */
+        @Nullable
+        private static JobID jobIdFrom(Context context) {
+            try {
+                final String hex =
+                        context.metricGroup().getAllVariables().get(ScopeFormat.SCOPE_JOB_ID);
+                return hex == null ? null : JobID.fromHexString(hex);
+            } catch (Throwable ignored) {
+                return null;
+            }
         }
     }
 }
