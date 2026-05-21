@@ -117,8 +117,18 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         final ScanTableSource tableSource =
                 tableSourceSpec.getScanTableSource(
                         planner.getFlinkContext(), ShortcutUtils.unwrapTypeFactory(planner));
-        ScanTableSource.ScanRuntimeProvider provider =
-                tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        final ScanTableSource.ScanRuntimeProvider provider;
+        try {
+            provider = tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        } catch (Throwable e) {
+            // Eager source-creation failure — during plan translation, before the job exists.
+            // Emit C2 inline (jobId is null: no job yet).
+            org.apache.flink.runtime.audit.LifecycleAudit.readFailed(
+                    null,
+                    tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions(),
+                    e.getMessage());
+            throw e;
+        }
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
         if (provider instanceof SourceFunctionProvider) {
@@ -135,9 +145,10 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                             sourceParallelismConfigured);
             if (function instanceof ParallelSourceFunction && sourceParallelismConfigured) {
                 meta.fill(sourceTransform);
-                return new SourceTransformationWrapper<>(sourceTransform);
+                return probeSource(
+                        new SourceTransformationWrapper<>(sourceTransform), outputTypeInfo);
             } else {
-                return meta.fill(sourceTransform);
+                return probeSource(meta.fill(sourceTransform), outputTypeInfo);
             }
         } else if (provider instanceof InputFormatProvider) {
             final InputFormat<RowData, ?> inputFormat =
@@ -175,17 +186,47 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                     provider.getClass().getSimpleName() + " is unsupported now.");
         }
 
+        final Transformation<RowData> result;
         if (sourceParallelismConfigured) {
-            return applySourceTransformationWrapper(
-                    sourceTransform,
-                    planner.getFlinkContext().getClassLoader(),
-                    outputTypeInfo,
-                    config,
-                    tableSource.getChangelogMode(),
-                    sourceParallelism);
+            result =
+                    applySourceTransformationWrapper(
+                            sourceTransform,
+                            planner.getFlinkContext().getClassLoader(),
+                            outputTypeInfo,
+                            config,
+                            tableSource.getChangelogMode(),
+                            sourceParallelism);
         } else {
-            return sourceTransform;
+            result = sourceTransform;
         }
+        return probeSource(result, outputTypeInfo);
+    }
+
+    /**
+     * Inserts a transparent {@link org.apache.flink.streaming.runtime.operators.lifecycle
+     * .LifecycleProbeOperator} right after the source. The probe forwards records unchanged and, on
+     * the first one, drives C1 (read started); its coordinator drives C2 (read failed). Works for
+     * any source provider (V1 or V2) because it observes the records the source emits, not the
+     * source operator itself. The DDL {@code WITH (...)} options are passed straight to the probe's
+     * coordinator — no registry, no JobID keying.
+     */
+    private Transformation<RowData> probeSource(
+            Transformation<RowData> input, InternalTypeInfo<RowData> outType) {
+        final java.util.Map<String, String> opts =
+                tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions();
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<RowData>
+                factory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(false, opts);
+        factory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        return new org.apache.flink.streaming.api.transformations.OneInputTransformation<>(
+                input,
+                "audit",
+                factory,
+                outType,
+                input.getParallelism(),
+                input.isParallelismConfigured());
     }
 
     private boolean isParallelismConfigured(ScanTableSource.ScanRuntimeProvider runtimeProvider) {

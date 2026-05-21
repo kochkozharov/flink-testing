@@ -147,10 +147,21 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
             boolean upsertMaterialize,
             int[] inputUpsertKey) {
         final ResolvedSchema schema = tableSinkSpec.getContextResolvedTable().getResolvedSchema();
-        final SinkRuntimeProvider runtimeProvider =
-                tableSink.getSinkRuntimeProvider(
-                        new SinkRuntimeProviderContext(
-                                isBounded, tableSinkSpec.getTargetColumns()));
+        final SinkRuntimeProvider runtimeProvider;
+        try {
+            runtimeProvider =
+                    tableSink.getSinkRuntimeProvider(
+                            new SinkRuntimeProviderContext(
+                                    isBounded, tableSinkSpec.getTargetColumns()));
+        } catch (Throwable e) {
+            // Eager sink-creation failure (e.g. ClickHouse auth) — happens during plan translation,
+            // before the job/coordinator exists. Emit C4 inline (jobId is null: no job yet).
+            org.apache.flink.runtime.audit.LifecycleAudit.writeFailed(
+                    null,
+                    tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions(),
+                    e.getMessage());
+            throw e;
+        }
         final RowType physicalRowType = getPhysicalRowType(schema);
         final int[] primaryKeys = getPrimaryKeyIndices(physicalRowType, schema);
         final int sinkParallelism = deriveSinkParallelism(inputTransform, runtimeProvider);
@@ -209,6 +220,11 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
             sinkTransform = applyRowKindSetter(sinkTransform, targetRowKind.get(), config);
         }
 
+        // Probe right before the sink: the first record entering the sink chain drives C3 (write
+        // started); its coordinator drives C4 (write failed). Works for any sink provider (V1 or V2)
+        // because it sits on the records flowing into the sink.
+        sinkTransform = probeSink(sinkTransform);
+
         return (Transformation<Object>)
                 applySinkProvider(
                         sinkTransform,
@@ -218,6 +234,29 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
                         sinkParallelism,
                         config,
                         classLoader);
+    }
+
+    /**
+     * Inserts a transparent {@link org.apache.flink.streaming.runtime.operators.lifecycle
+     * .LifecycleProbeOperator} right before the sink. The DDL {@code WITH (...)} options are passed
+     * straight to the probe's coordinator — no registry, no JobID keying.
+     */
+    private Transformation<RowData> probeSink(Transformation<RowData> input) {
+        final java.util.Map<String, String> opts =
+                tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions();
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<RowData>
+                factory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(true, opts);
+        factory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        return new org.apache.flink.streaming.api.transformations.OneInputTransformation<>(
+                input,
+                "audit",
+                factory,
+                input.getOutputType(),
+                input.getParallelism(),
+                input.isParallelismConfigured());
     }
 
     /**
