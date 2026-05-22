@@ -120,6 +120,7 @@ public final class DynamicSourceUtils {
             FlinkStatistic statistic,
             List<RelHint> hints,
             DynamicTableSource tableSource) {
+        try {
         final String tableDebugName = contextResolvedTable.getIdentifier().asSummaryString();
         final ResolvedCatalogTable resolvedCatalogTable = contextResolvedTable.getResolvedTable();
 
@@ -156,6 +157,15 @@ public final class DynamicSourceUtils {
         }
 
         return relBuilder.build();
+        } catch (Throwable t) {
+            // Source schema/metadata/watermark validation here is planner logic, not a source
+            // method, so the source proxy can't see it — emit C2 for the right source. Deduped
+            // against the proxy via EagerAudit.emit (first-wins), mirroring the convertSinkToRel
+            // schema catch on the sink side.
+            org.apache.flink.table.planner.audit.EagerAudit.emit(
+                    false, contextResolvedTable, t.getMessage());
+            throw t;
+        }
     }
 
     /**

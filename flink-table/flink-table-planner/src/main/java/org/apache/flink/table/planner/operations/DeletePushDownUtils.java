@@ -91,19 +91,25 @@ public class DeletePushDownUtils {
                             objectIdentifier,
                             resolvedTable,
                             isTemporary)) {
-                // create table dynamic table sink
+                // create table dynamic table sink — audit proxy: emits C4 if creation throws or any
+                // later sink call throws (applyDeleteFilters, getSinkRuntimeProvider, ...). This is
+                // the delete-pushdown sink-creation site, separate from the INSERT translate path.
                 DynamicTableSink tableSink =
-                        ExecutableOperationUtils.createDynamicTableSink(
-                                optionalCatalog.orElse(null),
+                        org.apache.flink.table.planner.audit.EagerAudit.sink(
+                                contextResolvedTable,
                                 () ->
-                                        context.getModuleManager()
-                                                .getFactory((Module::getTableSinkFactory)),
-                                objectIdentifier,
-                                resolvedTable,
-                                Collections.emptyMap(),
-                                context.getTableConfig(),
-                                context.getClassLoader(),
-                                contextResolvedTable.isTemporary());
+                                        ExecutableOperationUtils.createDynamicTableSink(
+                                                optionalCatalog.orElse(null),
+                                                () ->
+                                                        context.getModuleManager()
+                                                                .getFactory(
+                                                                        (Module::getTableSinkFactory)),
+                                                objectIdentifier,
+                                                resolvedTable,
+                                                Collections.emptyMap(),
+                                                context.getTableConfig(),
+                                                context.getClassLoader(),
+                                                contextResolvedTable.isTemporary()));
                 return Optional.of(tableSink);
             }
         }
