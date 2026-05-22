@@ -147,19 +147,9 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
             boolean upsertMaterialize,
             int[] inputUpsertKey) {
         final ResolvedSchema schema = tableSinkSpec.getContextResolvedTable().getResolvedSchema();
-        final SinkRuntimeProvider runtimeProvider;
-        try {
-            runtimeProvider =
-                    tableSink.getSinkRuntimeProvider(
-                            new SinkRuntimeProviderContext(
-                                    isBounded, tableSinkSpec.getTargetColumns()));
-        } catch (Throwable e) {
-            // Eager sink runtime-provider failure (e.g. ClickHouse auth) during exec-node
-            // translation, before the job/coordinator exists. Emit C4, deduped per translation.
-            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
-                    true, tableSinkSpec.getContextResolvedTable(), e.getMessage());
-            throw e;
-        }
+        final SinkRuntimeProvider runtimeProvider =
+                tableSink.getSinkRuntimeProvider(
+                        new SinkRuntimeProviderContext(isBounded, tableSinkSpec.getTargetColumns()));
         final RowType physicalRowType = getPhysicalRowType(schema);
         final int[] primaryKeys = getPrimaryKeyIndices(physicalRowType, schema);
         final int sinkParallelism = deriveSinkParallelism(inputTransform, runtimeProvider);

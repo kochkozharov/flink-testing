@@ -21,64 +21,69 @@ package org.apache.flink.table.planner.audit;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.audit.LifecycleAudit;
 import org.apache.flink.table.catalog.ContextResolvedTable;
-import org.apache.flink.table.operations.ModifyOperation;
-import org.apache.flink.table.operations.SinkModifyOperation;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 
-import java.util.HashSet;
-import java.util.List;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
- * Coordinates eager (plan-translation) audit emission so that every connector lifecycle failure
- * during {@code planner.translate(...)} produces exactly one C2/C4 — with the right side and the
- * right table identity — and never more.
+ * Eager (plan-translation) connector audit. Each connector ({@link DynamicTableSource} / {@link
+ * DynamicTableSink}) is wrapped in a transparent audit proxy at its single birth point (the {@code
+ * FactoryUtil.createDynamicTable*} call sites). The proxy emits C2 (source) / C4 (sink) — with the
+ * identity captured once at creation — if creation throws or if any later connector call throws
+ * ({@code getScanRuntimeProvider}, {@code getLookupRuntimeProvider}, {@code getSinkRuntimeProvider},
+ * {@code getChangelogMode}, pushdown/overwrite abilities, ...).
  *
- * <p>Two tiers cooperate through one {@link #emitOnce} entry point and a per-translation dedup set:
+ * <p>The one thing that is not a connector method is schema validation ({@code
+ * validateSchemaAndApplyImplicitCast} inside {@code convertSinkToRel}); a single catch there calls
+ * {@link #emit} directly. So there is no top-level "net" and no per-statement guessing — every
+ * failure is attributed to exactly the connector that raised it, which is correct even for a {@code
+ * STATEMENT SET} with several sinks.
  *
- * <ul>
- *   <li><b>Precise hooks</b> sit at the connector boundaries where identity is still known (sink
- *       factory creation + {@code convertSinkToRel}; source {@code toRel}; {@code
- *       getSinkRuntimeProvider}/{@code getScanRuntimeProvider}). Each calls {@link #emitOnce}.
- *   <li><b>The safety net</b> ({@link #netFallback}) runs from the single catch in {@code
- *       PlannerBase.translate}. It fires <em>only</em> when no precise hook emitted for this
- *       translation, covering the residual phases (optimize, exec-graph) with a best-effort C4.
- * </ul>
- *
- * <p>The dedup set is a {@link ThreadLocal} scoped to one {@code translate(...)} call via {@link
- * #begin()}/{@link #clear()}. Everything is best-effort and swallowed: audit must never break
- * translation, and in session mode (nothing wired) it simply produces no log.
+ * <p>{@link #emit} is first-wins within one translation (scoped by {@link #begin()}/{@link
+ * #clear()}): translation aborts on the first failure, and the guard also dedups an inner proxy emit
+ * against an outer catch for the same exception. Everything is best-effort and swallowed: audit
+ * never breaks translation and stays quiet in session mode.
  */
 @Internal
 public final class EagerAudit {
 
-    private static final ThreadLocal<Set<String>> EMITTED = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> EMITTED = new ThreadLocal<>();
 
     private EagerAudit() {}
 
-    /** Opens a dedup window for one {@code translate(...)} call. */
+    /** Opens a fresh window for one {@code translate(...)} call. */
     public static void begin() {
-        EMITTED.set(new HashSet<>());
+        EMITTED.set(Boolean.FALSE);
     }
 
-    /** Closes the dedup window. Always call from a {@code finally}. */
+    /** Closes the window. Always call from a {@code finally}. */
     public static void clear() {
         EMITTED.remove();
     }
 
     /**
-     * Emits C4 (sink) or C2 (source) for the given table at most once per translation. Outside a
-     * dedup window (e.g. a source {@code toRel} failure during SQL parsing) it simply emits.
+     * Emits C4 (sink) or C2 (source) for {@code ctx}, at most once per translation (first wins).
+     * Called by the connector proxies and by the schema-validation catch.
      */
-    public static void emitOnce(boolean sink, ContextResolvedTable ctx, String reason) {
+    public static void emit(boolean sink, ContextResolvedTable ctx, String reason) {
         try {
+            if (Boolean.TRUE.equals(EMITTED.get())) {
+                return; // already logged in this translation (inner proxy or earlier failure)
+            }
+            EMITTED.set(Boolean.TRUE);
             if (ctx == null) {
                 return;
-            }
-            final String key = (sink ? "sink:" : "source:") + ctx.getIdentifier().asSummaryString();
-            final Set<String> set = EMITTED.get();
-            if (set != null && !set.add(key)) {
-                return; // a precise hook already logged this connector in this translation
             }
             final Map<String, String> options = ctx.getResolvedTable().getOptions();
             if (sink) {
@@ -91,26 +96,123 @@ public final class EagerAudit {
         }
     }
 
-    /**
-     * Last-resort emit from the catch in {@code PlannerBase.translate}. Stays silent if a precise
-     * hook already emitted (the common path), so it never reintroduces over-emit. Otherwise it
-     * attributes the failure to the always-identifiable sink(s) of the failed statement — covering
-     * optimize/exec-graph phases that have no clean per-connector boundary.
-     */
-    public static void netFallback(List<ModifyOperation> modifyOperations, Throwable t) {
+    // ------------------------------------------------------------------------
+    //  Proxy installers (one per connector birth site)
+    // ------------------------------------------------------------------------
+
+    /** Creates a source via {@code create} and returns it wrapped in an audit proxy. */
+    public static DynamicTableSource source(
+            ContextResolvedTable ctx, Supplier<DynamicTableSource> create) {
+        final DynamicTableSource raw;
         try {
-            final Set<String> set = EMITTED.get();
-            if (set == null || !set.isEmpty()) {
-                return;
-            }
-            final String reason = t == null ? null : t.getMessage();
-            for (ModifyOperation op : modifyOperations) {
-                if (op instanceof SinkModifyOperation) {
-                    emitOnce(true, ((SinkModifyOperation) op).getContextResolvedTable(), reason);
-                }
-            }
-        } catch (Throwable ignored) {
-            // Best-effort.
+            raw = create.get();
+        } catch (Throwable t) {
+            emit(false, ctx, t.getMessage());
+            throw t;
         }
+        return (DynamicTableSource) wrap(false, ctx, raw);
+    }
+
+    /** Creates a sink via {@code create} and returns it wrapped in an audit proxy. */
+    public static DynamicTableSink sink(
+            ContextResolvedTable ctx, Supplier<DynamicTableSink> create) {
+        final DynamicTableSink raw;
+        try {
+            raw = create.get();
+        } catch (Throwable t) {
+            emit(true, ctx, t.getMessage());
+            throw t;
+        }
+        return (DynamicTableSink) wrap(true, ctx, raw);
+    }
+
+    private static Object wrap(boolean sink, ContextResolvedTable ctx, Object delegate) {
+        if (delegate == null) {
+            return null;
+        }
+        try {
+            // Don't double-wrap (e.g. a spec reusing the rel's already-proxied connector).
+            if (Proxy.isProxyClass(delegate.getClass())
+                    && Proxy.getInvocationHandler(delegate) instanceof AuditHandler) {
+                return delegate;
+            }
+            return Proxy.newProxyInstance(
+                    delegate.getClass().getClassLoader(),
+                    allInterfaces(delegate.getClass()),
+                    new AuditHandler(sink, ctx, delegate));
+        } catch (Throwable ignored) {
+            // If proxying isn't possible, fall back to the raw connector — audit must never break
+            // translation (worst case: a creation failure was still caught above; later method
+            // failures on this instance simply go unaudited).
+            return delegate;
+        }
+    }
+
+    /** Forwards every call to the real connector; emits on failure; re-wraps {@code copy()}. */
+    private static final class AuditHandler implements InvocationHandler {
+
+        private final boolean sink;
+        private final ContextResolvedTable ctx;
+        private final Object delegate;
+
+        AuditHandler(boolean sink, ContextResolvedTable ctx, Object delegate) {
+            this.sink = sink;
+            this.ctx = ctx;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            final String name = method.getName();
+            if (args != null && args.length == 1 && "equals".equals(name)) {
+                return proxy == args[0] || delegate.equals(unwrap(args[0]));
+            }
+            if (args == null && "hashCode".equals(name)) {
+                return delegate.hashCode();
+            }
+            if (args == null && "toString".equals(name)) {
+                return delegate.toString();
+            }
+            final Object result;
+            try {
+                result = method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                final Throwable cause = e.getCause() != null ? e.getCause() : e;
+                emit(sink, ctx, cause.getMessage());
+                throw cause;
+            }
+            // Keep the audit on copies (pushdown / ability application produce copies).
+            if (args == null
+                    && "copy".equals(name)
+                    && (result instanceof DynamicTableSource || result instanceof DynamicTableSink)) {
+                return wrap(sink, ctx, result);
+            }
+            return result;
+        }
+    }
+
+    private static Object unwrap(Object o) {
+        if (o != null
+                && Proxy.isProxyClass(o.getClass())
+                && Proxy.getInvocationHandler(o) instanceof AuditHandler) {
+            return ((AuditHandler) Proxy.getInvocationHandler(o)).delegate;
+        }
+        return o;
+    }
+
+    /** All interfaces implemented anywhere in the class hierarchy (so the proxy is a drop-in). */
+    private static Class<?>[] allInterfaces(Class<?> type) {
+        final Set<Class<?>> ifaces = new LinkedHashSet<>();
+        final Deque<Class<?>> queue = new ArrayDeque<>();
+        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+            queue.addAll(Arrays.asList(c.getInterfaces()));
+        }
+        while (!queue.isEmpty()) {
+            final Class<?> i = queue.poll();
+            if (ifaces.add(i)) {
+                queue.addAll(Arrays.asList(i.getInterfaces()));
+            }
+        }
+        return ifaces.toArray(new Class<?>[0]);
     }
 }

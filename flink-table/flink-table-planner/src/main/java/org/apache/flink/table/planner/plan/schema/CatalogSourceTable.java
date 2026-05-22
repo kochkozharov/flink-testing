@@ -100,38 +100,29 @@ public final class CatalogSourceTable extends FlinkPreparingTableBase {
 
     @Override
     public RelNode toRel(ToRelContext toRelContext) {
-        try {
-            final RelOptCluster cluster = toRelContext.getCluster();
-            final List<RelHint> hints = toRelContext.getTableHints();
-            final FlinkContext context = ShortcutUtils.unwrapContext(cluster);
-            final FlinkRelBuilder relBuilder = FlinkRelBuilder.of(cluster, relOptSchema);
+        final RelOptCluster cluster = toRelContext.getCluster();
+        final List<RelHint> hints = toRelContext.getTableHints();
+        final FlinkContext context = ShortcutUtils.unwrapContext(cluster);
+        final FlinkRelBuilder relBuilder = FlinkRelBuilder.of(cluster, relOptSchema);
 
-            // finalize catalog table with option hints
-            final Map<String, String> hintedOptions = FlinkHints.getHintedOptions(hints);
-            final ContextResolvedTable catalogTable =
-                    computeContextResolvedTable(context, hintedOptions);
+        // finalize catalog table with option hints
+        final Map<String, String> hintedOptions = FlinkHints.getHintedOptions(hints);
+        final ContextResolvedTable catalogTable =
+                computeContextResolvedTable(context, hintedOptions);
 
-            // create table source
-            final DynamicTableSource tableSource =
-                    createDynamicTableSource(context, catalogTable.getResolvedTable());
+        // create table source
+        final DynamicTableSource tableSource =
+                createDynamicTableSource(context, catalogTable.getResolvedTable());
 
-            // prepare table source and convert to RelNode
-            return DynamicSourceUtils.convertSourceToRel(
-                    !schemaTable.isStreamingMode(),
-                    context.getTableConfig(),
-                    relBuilder,
-                    schemaTable.getContextResolvedTable(),
-                    schemaTable.getStatistic(),
-                    hints,
-                    tableSource);
-        } catch (Throwable t) {
-            // Eager source failure during rel conversion (factory creation, schema/metadata
-            // validation) — happens in PlannerBase.translateToRel (or SQL parse), before the job
-            // exists. Emit C2 inline, deduped per translation, then rethrow.
-            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
-                    false, schemaTable.getContextResolvedTable(), t.getMessage());
-            throw t;
-        }
+        // prepare table source and convert to RelNode
+        return DynamicSourceUtils.convertSourceToRel(
+                !schemaTable.isStreamingMode(),
+                context.getTableConfig(),
+                relBuilder,
+                schemaTable.getContextResolvedTable(),
+                schemaTable.getStatistic(),
+                hints,
+                tableSource);
     }
 
     private ContextResolvedTable computeContextResolvedTable(
@@ -181,13 +172,18 @@ public final class CatalogSourceTable extends FlinkPreparingTableBase {
         final DynamicTableSourceFactory factory =
                 firstPresent(factoryFromCatalog, factoryFromModule).orElse(null);
 
-        return FactoryUtil.createDynamicTableSource(
-                factory,
-                schemaTable.getContextResolvedTable().getIdentifier(),
-                catalogTable,
-                context.getTableConfig(),
-                context.getClassLoader(),
-                schemaTable.isTemporary());
+        // Audit proxy: emits C2 if creation throws (e.g. unknown format) and intercepts every later
+        // connector call (getScanRuntimeProvider, getChangelogMode, pushdown abilities, ...).
+        return org.apache.flink.table.planner.audit.EagerAudit.source(
+                schemaTable.getContextResolvedTable(),
+                () ->
+                        FactoryUtil.createDynamicTableSource(
+                                factory,
+                                schemaTable.getContextResolvedTable().getIdentifier(),
+                                catalogTable,
+                                context.getTableConfig(),
+                                context.getClassLoader(),
+                                schemaTable.isTemporary()));
     }
 
     public CatalogTable getCatalogTable() {

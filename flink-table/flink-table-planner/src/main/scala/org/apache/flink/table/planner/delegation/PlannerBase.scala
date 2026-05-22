@@ -175,6 +175,8 @@ abstract class PlannerBase(
       return List.empty[Transformation[_]]
     }
 
+    // Open an eager-audit window: connector proxies (source/sink) and the convertSinkToRel schema
+    // catch attribute any plan-translation failure to the exact connector that raised it.
     EagerAudit.begin()
     val transformations =
       try {
@@ -182,12 +184,6 @@ abstract class PlannerBase(
         val optimizedRelNodes = optimize(relNodes)
         val execGraph = translateToExecNodeGraph(optimizedRelNodes, isCompiled = false)
         translateToPlan(execGraph)
-      } catch {
-        case t: Throwable =>
-          // Safety net for eager failures with no precise hook (optimize / exec-graph phases).
-          // Stays silent if a hook already emitted, so over-emit is not reintroduced.
-          EagerAudit.netFallback(modifyOperations, t)
-          throw t
       } finally {
         EagerAudit.clear()
       }
@@ -235,10 +231,7 @@ abstract class PlannerBase(
           stagedSink.getDynamicTableSink)
 
       case catalogSink: SinkModifyOperation =>
-        // input (source side) is built outside the try so a source failure here is not
-        // misattributed to the sink — the source's own toRel hook emits its C2.
         val input = createRelBuilder.queryOperation(modifyOperation.getChild).build()
-        try {
         val dynamicOptions = catalogSink.getDynamicOptions
         getTableSink(catalogSink.getContextResolvedTable, dynamicOptions).map {
           case (table, sink: TableSink[_]) =>
@@ -290,13 +283,6 @@ abstract class PlannerBase(
           case None =>
             throw new TableException(
               s"Sink '${catalogSink.getContextResolvedTable}' does not exists")
-        }
-        } catch {
-          case t: Throwable =>
-            // Eager sink failure during rel conversion: factory creation (getTableSink) or
-            // schema/cast validation (convertSinkToRel). Emit C4, deduped per translation.
-            EagerAudit.emitOnce(true, catalogSink.getContextResolvedTable, t.getMessage)
-            throw t
         }
 
       case externalModifyOperation: ExternalModifyOperation =>
@@ -463,14 +449,19 @@ abstract class PlannerBase(
           // any modules.
           val factory = factoryFromCatalog.orElse(factoryFromModule).orNull
 
-          val tableSink = FactoryUtil.createDynamicTableSink(
-            factory,
-            objectIdentifier,
-            tableToFind,
-            Collections.emptyMap(),
-            getTableConfig,
-            getFlinkContext.getClassLoader,
-            isTemporary)
+          // Audit proxy: emits C4 if creation throws or any later sink call throws
+          // (getSinkRuntimeProvider, overwrite/partition abilities, ...).
+          val tableSink = EagerAudit.sink(
+            contextResolvedTable,
+            () =>
+              FactoryUtil.createDynamicTableSink(
+                factory,
+                objectIdentifier,
+                tableToFind,
+                Collections.emptyMap(),
+                getTableConfig,
+                getFlinkContext.getClassLoader,
+                isTemporary))
           Option(resolvedTable, tableSink)
         }
 

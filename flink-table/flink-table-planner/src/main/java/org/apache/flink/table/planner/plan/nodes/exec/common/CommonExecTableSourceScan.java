@@ -117,16 +117,8 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         final ScanTableSource tableSource =
                 tableSourceSpec.getScanTableSource(
                         planner.getFlinkContext(), ShortcutUtils.unwrapTypeFactory(planner));
-        final ScanTableSource.ScanRuntimeProvider provider;
-        try {
-            provider = tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
-        } catch (Throwable e) {
-            // Eager source runtime-provider failure during exec-node translation, before the job
-            // exists. Emit C2, deduped per translation.
-            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
-                    false, tableSourceSpec.getContextResolvedTable(), e.getMessage());
-            throw e;
-        }
+        final ScanTableSource.ScanRuntimeProvider provider =
+                tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
         if (provider instanceof SourceFunctionProvider) {

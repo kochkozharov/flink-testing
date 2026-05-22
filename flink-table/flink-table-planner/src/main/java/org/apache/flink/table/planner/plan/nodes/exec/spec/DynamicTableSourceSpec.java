@@ -88,15 +88,21 @@ public class DynamicTableSourceSpec extends DynamicTableSpecBase {
                                 .orElse(null);
             }
 
+            final DynamicTableSourceFactory sourceFactory = factory;
+            // Audit proxy: emits C2 if creation throws and intercepts later connector calls
+            // (getScanRuntimeProvider, getLookupRuntimeProvider, pushdown abilities, ...).
             tableSource =
-                    FactoryUtil.createDynamicTableSource(
-                            factory,
-                            contextResolvedTable.getIdentifier(),
-                            contextResolvedTable.getResolvedTable(),
-                            loadOptionsFromCatalogTable(contextResolvedTable, context),
-                            context.getTableConfig(),
-                            context.getClassLoader(),
-                            contextResolvedTable.isTemporary());
+                    org.apache.flink.table.planner.audit.EagerAudit.source(
+                            contextResolvedTable,
+                            () ->
+                                    FactoryUtil.createDynamicTableSource(
+                                            sourceFactory,
+                                            contextResolvedTable.getIdentifier(),
+                                            contextResolvedTable.getResolvedTable(),
+                                            loadOptionsFromCatalogTable(contextResolvedTable, context),
+                                            context.getTableConfig(),
+                                            context.getClassLoader(),
+                                            contextResolvedTable.isTemporary()));
 
             if (sourceAbilities != null) {
                 RowType newProducedType =

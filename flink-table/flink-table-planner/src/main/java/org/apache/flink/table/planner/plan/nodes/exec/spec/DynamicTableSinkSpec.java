@@ -83,15 +83,21 @@ public class DynamicTableSinkSpec extends DynamicTableSpecBase {
             final DynamicTableSinkFactory factory =
                     context.getModuleManager().getFactory(Module::getTableSinkFactory).orElse(null);
 
+            final DynamicTableSinkFactory sinkFactory = factory;
+            // Audit proxy: emits C4 if creation throws or any later sink call throws
+            // (getSinkRuntimeProvider, overwrite/partition abilities, ...).
             tableSink =
-                    FactoryUtil.createDynamicTableSink(
-                            factory,
-                            contextResolvedTable.getIdentifier(),
-                            contextResolvedTable.getResolvedTable(),
-                            loadOptionsFromCatalogTable(contextResolvedTable, context),
-                            context.getTableConfig(),
-                            context.getClassLoader(),
-                            contextResolvedTable.isTemporary());
+                    org.apache.flink.table.planner.audit.EagerAudit.sink(
+                            contextResolvedTable,
+                            () ->
+                                    FactoryUtil.createDynamicTableSink(
+                                            sinkFactory,
+                                            contextResolvedTable.getIdentifier(),
+                                            contextResolvedTable.getResolvedTable(),
+                                            loadOptionsFromCatalogTable(contextResolvedTable, context),
+                                            context.getTableConfig(),
+                                            context.getClassLoader(),
+                                            contextResolvedTable.isTemporary()));
             if (sinkAbilities != null) {
                 sinkAbilities.forEach(spec -> spec.apply(tableSink));
             }

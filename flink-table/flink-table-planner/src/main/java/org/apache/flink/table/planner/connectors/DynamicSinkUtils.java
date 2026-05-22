@@ -209,10 +209,11 @@ public final class DynamicSinkUtils {
                     sinkModifyOperation.isOverwrite(),
                     sink);
         } catch (Throwable e) {
-            // Eager sink failure during rel conversion (e.g. schema/column-count mismatch) — thrown
-            // in PlannerBase.translateToRel. Emit C4, deduped per translation (the PlannerBase
-            // sink-block hook also covers this path; whichever fires first wins).
-            org.apache.flink.table.planner.audit.EagerAudit.emitOnce(
+            // Schema/cast validation (validateSchemaAndApplyImplicitCast) is planner logic, not a
+            // sink method, so the sink proxy can't see it — emit C4 here for the right sink. Deduped
+            // against the proxy via EagerAudit.emit (first-wins), so an ability failure that the
+            // proxy already logged is not double-counted.
+            org.apache.flink.table.planner.audit.EagerAudit.emit(
                     true, sinkModifyOperation.getContextResolvedTable(), e.getMessage());
             throw e;
         }
