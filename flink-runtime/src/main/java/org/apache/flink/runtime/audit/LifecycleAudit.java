@@ -56,22 +56,40 @@ public final class LifecycleAudit {
 
     /** C1 — source started reading. */
     public static void readStarted(JobID jobId, Map<String, String> withOptions) {
-        emit(AuditSubtypeId.C1, SUCCESS, jobId, withOptions, null);
+        emit(AuditSubtypeId.C1, SUCCESS, jobId, withOptions, null, null);
     }
 
     /** C2 — source failed reading. */
     public static void readFailed(JobID jobId, Map<String, String> withOptions, String reason) {
-        emit(AuditSubtypeId.C2, FAIL, jobId, withOptions, reason);
+        emit(AuditSubtypeId.C2, FAIL, jobId, withOptions, reason, null);
     }
 
     /** C3 — sink started writing. */
     public static void writeStarted(JobID jobId, Map<String, String> withOptions) {
-        emit(AuditSubtypeId.C3, SUCCESS, jobId, withOptions, null);
+        writeStarted(jobId, withOptions, null);
+    }
+
+    /**
+     * C3 with the SQL-intended modified columns of the sink (target columns of INSERT/UPDATE; all
+     * columns for {@code INSERT INTO sink SELECT ...}). Pass {@code null}/empty if unknown.
+     */
+    public static void writeStarted(
+            JobID jobId, Map<String, String> withOptions, List<String> modifiedColumns) {
+        emit(AuditSubtypeId.C3, SUCCESS, jobId, withOptions, null, modifiedColumns);
     }
 
     /** C4 — sink failed writing. */
     public static void writeFailed(JobID jobId, Map<String, String> withOptions, String reason) {
-        emit(AuditSubtypeId.C4, FAIL, jobId, withOptions, reason);
+        writeFailed(jobId, withOptions, reason, null);
+    }
+
+    /** C4 with the SQL-intended modified columns of the sink. */
+    public static void writeFailed(
+            JobID jobId,
+            Map<String, String> withOptions,
+            String reason,
+            List<String> modifiedColumns) {
+        emit(AuditSubtypeId.C4, FAIL, jobId, withOptions, reason, modifiedColumns);
     }
 
     private static void emit(
@@ -79,7 +97,8 @@ public final class LifecycleAudit {
             String status,
             JobID jobId,
             Map<String, String> opts,
-            String reason) {
+            String reason,
+            List<String> modifiedColumns) {
         try {
             final SessionInfo s = Sessions.forJob(jobId);
             final String connector = opts == null ? null : opts.get("connector");
@@ -93,6 +112,12 @@ public final class LifecycleAudit {
                 for (Map.Entry<String, String> e : opts.entrySet()) {
                     props.add(e.getKey() + "=" + e.getValue());
                 }
+            }
+            // SQL-intended modified columns of the sink (target columns of the INSERT/UPDATE).
+            // For C3/C4 it carries what the sink WAS ASKED to write; not what the connector
+            // actually persisted. Null/empty for source events and when unknown.
+            if (modifiedColumns != null && !modifiedColumns.isEmpty()) {
+                props.add("modified_columns=[" + String.join(",", modifiedColumns) + "]");
             }
 
             final AuditEvent event =

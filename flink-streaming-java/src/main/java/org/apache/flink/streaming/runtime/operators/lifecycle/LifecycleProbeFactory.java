@@ -28,6 +28,7 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -44,10 +45,18 @@ public final class LifecycleProbeFactory<T> extends AbstractStreamOperatorFactor
 
     private final boolean sink;
     private final Map<String, String> options;
+    /** SQL-intended modified columns of the sink; null/empty on the source side or when unknown. */
+    private final List<String> modifiedColumns;
 
     public LifecycleProbeFactory(boolean sink, Map<String, String> options) {
+        this(sink, options, null);
+    }
+
+    public LifecycleProbeFactory(
+            boolean sink, Map<String, String> options, List<String> modifiedColumns) {
         this.sink = sink;
         this.options = options;
+        this.modifiedColumns = modifiedColumns;
     }
 
     @Override
@@ -70,7 +79,7 @@ public final class LifecycleProbeFactory<T> extends AbstractStreamOperatorFactor
     @Override
     public OperatorCoordinator.Provider getCoordinatorProvider(
             String operatorName, OperatorID operatorID) {
-        return new LifecycleCoordinator.Provider(operatorID, sink, options);
+        return new LifecycleCoordinator.Provider(operatorID, sink, options, modifiedColumns);
     }
 
     @Override

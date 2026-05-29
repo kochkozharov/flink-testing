@@ -20,21 +20,29 @@ package org.apache.flink.table.planner.audit;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.audit.LifecycleAudit;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ContextResolvedTable;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.RowType;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * Eager (plan-translation) connector audit. Each connector ({@link DynamicTableSource} / {@link
@@ -77,23 +85,87 @@ public final class EagerAudit {
      * Called by the connector proxies and by the schema-validation catch.
      */
     public static void emit(boolean sink, ContextResolvedTable ctx, String reason) {
+        emit(sink, ctx, reason, null);
+    }
+
+    /**
+     * Same as {@link #emit(boolean, ContextResolvedTable, String)} but additionally attaches the
+     * SQL-intended modified columns of the sink (only meaningful for {@code sink == true}; pass
+     * {@code null} on the source side).
+     */
+    public static void emit(
+            boolean sink,
+            ContextResolvedTable ctx,
+            String reason,
+            List<String> modifiedColumns) {
         try {
             if (Boolean.TRUE.equals(EMITTED.get())) {
                 return; // already logged in this translation (inner proxy or earlier failure)
             }
-            EMITTED.set(Boolean.TRUE);
             if (ctx == null) {
-                return;
+                return; // nothing to identify — don't consume the emit slot
             }
+            EMITTED.set(Boolean.TRUE);
             final Map<String, String> options = ctx.getResolvedTable().getOptions();
             if (sink) {
-                LifecycleAudit.writeFailed(null, options, reason);
+                LifecycleAudit.writeFailed(null, options, reason, modifiedColumns);
             } else {
                 LifecycleAudit.readFailed(null, options, reason);
             }
         } catch (Throwable ignored) {
             // Best-effort: never let audit break plan translation.
         }
+    }
+
+    // ------------------------------------------------------------------------
+    //  Target-column resolution — turns the planner's {@code int[][]} target column
+    //  path encoding into human-readable, SQL-intent column names.
+    //  - {@code null} or empty targetColumns means "INSERT INTO sink SELECT ..." → all columns.
+    //  - Top-level paths return the column name; nested paths walk into RowType using dot
+    //    notation (e.g. {@code addr.city}); unresolvable indices fall back to {@code #N}.
+    // ------------------------------------------------------------------------
+
+    /** Resolve target-column index paths against the sink's resolved schema. */
+    public static List<String> targetColumnNames(
+            ResolvedSchema schema, int[][] targetColumns) {
+        if (schema == null) {
+            return Collections.emptyList();
+        }
+        final List<Column> cols = schema.getColumns();
+        if (targetColumns == null || targetColumns.length == 0) {
+            return cols.stream().map(Column::getName).collect(Collectors.toList());
+        }
+        final List<String> out = new ArrayList<>(targetColumns.length);
+        for (int[] path : targetColumns) {
+            if (path == null || path.length == 0) {
+                continue;
+            }
+            if (path[0] < 0 || path[0] >= cols.size()) {
+                continue;
+            }
+            final Column top = cols.get(path[0]);
+            out.add(buildColumnPath(top.getName(), top.getDataType(), path));
+        }
+        return out;
+    }
+
+    private static String buildColumnPath(String topName, DataType topType, int[] path) {
+        final StringBuilder sb = new StringBuilder(topName);
+        DataType cur = topType;
+        for (int i = 1; i < path.length; i++) {
+            if (cur != null && cur.getLogicalType() instanceof RowType) {
+                final RowType rt = (RowType) cur.getLogicalType();
+                final int idx = path[i];
+                if (idx >= 0 && idx < rt.getFieldCount()) {
+                    sb.append('.').append(rt.getFieldNames().get(idx));
+                    cur = cur.getChildren().get(idx);
+                    continue;
+                }
+            }
+            sb.append(".#").append(path[i]);
+            cur = null;
+        }
+        return sb.toString();
     }
 
     // ------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -47,14 +48,21 @@ final class LifecycleCoordinator implements OperatorCoordinator {
     private final boolean sink;
     private final Map<String, String> options;
     @Nullable private final JobID jobId;
+    /** SQL-intended modified columns of the sink; null/empty for source and when unknown. */
+    @Nullable private final List<String> modifiedColumns;
 
     private boolean startedLogged;
     private boolean failedLogged;
 
-    LifecycleCoordinator(boolean sink, Map<String, String> options, @Nullable JobID jobId) {
+    LifecycleCoordinator(
+            boolean sink,
+            Map<String, String> options,
+            @Nullable JobID jobId,
+            @Nullable List<String> modifiedColumns) {
         this.sink = sink;
         this.options = options;
         this.jobId = jobId;
+        this.modifiedColumns = modifiedColumns;
     }
 
     @Override
@@ -71,7 +79,7 @@ final class LifecycleCoordinator implements OperatorCoordinator {
         startedLogged = true;
         failedLogged = false; // a fresh successful start re-arms failure logging
         if (sink) {
-            LifecycleAudit.writeStarted(jobId, options);
+            LifecycleAudit.writeStarted(jobId, options, modifiedColumns);
         } else {
             LifecycleAudit.readStarted(jobId, options);
         }
@@ -85,7 +93,7 @@ final class LifecycleCoordinator implements OperatorCoordinator {
         failedLogged = true;
         final String msg = reason != null ? reason.getMessage() : null;
         if (sink) {
-            LifecycleAudit.writeFailed(jobId, options, msg);
+            LifecycleAudit.writeFailed(jobId, options, msg, modifiedColumns);
         } else {
             LifecycleAudit.readFailed(jobId, options, msg);
         }
@@ -119,11 +127,17 @@ final class LifecycleCoordinator implements OperatorCoordinator {
         private final OperatorID operatorID;
         private final boolean sink;
         private final Map<String, String> options;
+        @Nullable private final List<String> modifiedColumns;
 
-        Provider(OperatorID operatorID, boolean sink, Map<String, String> options) {
+        Provider(
+                OperatorID operatorID,
+                boolean sink,
+                Map<String, String> options,
+                @Nullable List<String> modifiedColumns) {
             this.operatorID = operatorID;
             this.sink = sink;
             this.options = options;
+            this.modifiedColumns = modifiedColumns;
         }
 
         @Override
@@ -133,7 +147,7 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
         @Override
         public OperatorCoordinator create(Context context) {
-            return new LifecycleCoordinator(sink, options, jobIdFrom(context));
+            return new LifecycleCoordinator(sink, options, jobIdFrom(context), modifiedColumns);
         }
 
         /**

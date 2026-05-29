@@ -232,10 +232,16 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
     private Transformation<RowData> probeSink(Transformation<RowData> input) {
         final java.util.Map<String, String> opts =
                 tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions();
+        // SQL-intended modified columns: explicit target list, or all sink columns for plain
+        // INSERT INTO sink SELECT ... . Carried to the JM coordinator and reported in C3/C4.
+        final java.util.List<String> modifiedColumns =
+                org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
+                        tableSinkSpec.getContextResolvedTable().getResolvedSchema(),
+                        tableSinkSpec.getTargetColumns());
         final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<RowData>
                 factory =
                         new org.apache.flink.streaming.runtime.operators.lifecycle
-                                .LifecycleProbeFactory<>(true, opts);
+                                .LifecycleProbeFactory<>(true, opts, modifiedColumns);
         factory.setChainingStrategy(
                 org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
         return new org.apache.flink.streaming.api.transformations.OneInputTransformation<>(

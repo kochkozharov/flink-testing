@@ -212,9 +212,16 @@ public final class DynamicSinkUtils {
             // Schema/cast validation (validateSchemaAndApplyImplicitCast) is planner logic, not a
             // sink method, so the sink proxy can't see it — emit C4 here for the right sink. Deduped
             // against the proxy via EagerAudit.emit (first-wins), so an ability failure that the
-            // proxy already logged is not double-counted.
+            // proxy already logged is not double-counted. Attach the SQL-intended target columns.
+            final org.apache.flink.table.catalog.ContextResolvedTable sinkCtx =
+                    sinkModifyOperation.getContextResolvedTable();
             org.apache.flink.table.planner.audit.EagerAudit.emit(
-                    true, sinkModifyOperation.getContextResolvedTable(), e.getMessage());
+                    true,
+                    sinkCtx,
+                    e.getMessage(),
+                    org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
+                            sinkCtx.getResolvedSchema(),
+                            sinkModifyOperation.getTargetColumns()));
             throw e;
         }
     }
