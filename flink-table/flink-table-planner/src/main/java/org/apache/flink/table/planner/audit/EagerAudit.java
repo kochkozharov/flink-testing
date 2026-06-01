@@ -25,8 +25,6 @@ import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
-import org.apache.flink.table.types.DataType;
-import org.apache.flink.table.types.logical.RowType;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -117,15 +115,13 @@ public final class EagerAudit {
         }
     }
 
-    // ------------------------------------------------------------------------
-    //  Target-column resolution — turns the planner's {@code int[][]} target column
-    //  path encoding into human-readable, SQL-intent column names.
-    //  - {@code null} or empty targetColumns means "INSERT INTO sink SELECT ..." → all columns.
-    //  - Top-level paths return the column name; nested paths walk into RowType using dot
-    //    notation (e.g. {@code addr.city}); unresolvable indices fall back to {@code #N}.
-    // ------------------------------------------------------------------------
-
-    /** Resolve target-column index paths against the sink's resolved schema. */
+    /**
+     * Resolve top-level target-column indices against the sink's resolved schema. Empty/null
+     * {@code targetColumns} (no explicit column list, e.g. {@code INSERT INTO sink SELECT ...} or
+     * an UPDATE statement) means "all columns of the table". Flink SQL's parser/validator only
+     * accepts top-level columns in INSERT lists, and the planner does not surface nested SET
+     * targets in {@link int[][]}, so only {@code path[0]} is meaningful.
+     */
     public static List<String> targetColumnNames(
             ResolvedSchema schema, int[][] targetColumns) {
         if (schema == null) {
@@ -140,32 +136,13 @@ public final class EagerAudit {
             if (path == null || path.length == 0) {
                 continue;
             }
-            if (path[0] < 0 || path[0] >= cols.size()) {
+            final int idx = path[0];
+            if (idx < 0 || idx >= cols.size()) {
                 continue;
             }
-            final Column top = cols.get(path[0]);
-            out.add(buildColumnPath(top.getName(), top.getDataType(), path));
+            out.add(cols.get(idx).getName());
         }
         return out;
-    }
-
-    private static String buildColumnPath(String topName, DataType topType, int[] path) {
-        final StringBuilder sb = new StringBuilder(topName);
-        DataType cur = topType;
-        for (int i = 1; i < path.length; i++) {
-            if (cur != null && cur.getLogicalType() instanceof RowType) {
-                final RowType rt = (RowType) cur.getLogicalType();
-                final int idx = path[i];
-                if (idx >= 0 && idx < rt.getFieldCount()) {
-                    sb.append('.').append(rt.getFieldNames().get(idx));
-                    cur = cur.getChildren().get(idx);
-                    continue;
-                }
-            }
-            sb.append(".#").append(path[i]);
-            cur = null;
-        }
-        return sb.toString();
     }
 
     // ------------------------------------------------------------------------
