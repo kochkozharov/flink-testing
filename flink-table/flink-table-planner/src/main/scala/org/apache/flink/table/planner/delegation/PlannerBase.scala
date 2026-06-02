@@ -233,7 +233,7 @@ abstract class PlannerBase(
       case catalogSink: SinkModifyOperation =>
         val input = createRelBuilder.queryOperation(modifyOperation.getChild).build()
         val dynamicOptions = catalogSink.getDynamicOptions
-        getTableSink(catalogSink.getContextResolvedTable, dynamicOptions).map {
+        getTableSink(catalogSink.getContextResolvedTable, dynamicOptions, catalogSink.getTargetColumns).map {
           case (table, sink: TableSink[_]) =>
             // Legacy tables can't be anonymous
             val identifier = catalogSink.getContextResolvedTable.getIdentifier
@@ -386,7 +386,8 @@ abstract class PlannerBase(
 
   private def getTableSink(
       contextResolvedTable: ContextResolvedTable,
-      dynamicOptions: JMap[String, String]): Option[(ResolvedCatalogTable, Any)] = {
+      dynamicOptions: JMap[String, String],
+      targetColumns: Array[Array[Int]]): Option[(ResolvedCatalogTable, Any)] = {
     contextResolvedTable.getTable[CatalogBaseTable] match {
       case connectorTable: ConnectorCatalogTable[_, _] =>
         val resolvedTable = contextResolvedTable.getResolvedTable[ResolvedCatalogTable]
@@ -450,7 +451,10 @@ abstract class PlannerBase(
           val factory = factoryFromCatalog.orElse(factoryFromModule).orNull
 
           // Audit proxy: emits C4 if creation throws or any later sink call throws
-          // (getSinkRuntimeProvider, overwrite/partition abilities, ...).
+          // (getSinkRuntimeProvider, overwrite/partition abilities, ...). Carries the
+          // SQL-intended modified columns so proxy-emitted C4 matches the runtime C3/C4.
+          val modifiedColumns = EagerAudit.targetColumnNames(
+            contextResolvedTable.getResolvedSchema, targetColumns)
           val tableSink = EagerAudit.sink(
             contextResolvedTable,
             () =>
@@ -461,7 +465,8 @@ abstract class PlannerBase(
                 Collections.emptyMap(),
                 getTableConfig,
                 getFlinkContext.getClassLoader,
-                isTemporary))
+                isTemporary),
+            modifiedColumns)
           Option(resolvedTable, tableSink)
         }
 

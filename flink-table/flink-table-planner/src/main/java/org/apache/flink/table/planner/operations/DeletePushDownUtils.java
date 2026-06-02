@@ -94,6 +94,11 @@ public class DeletePushDownUtils {
                 // create table dynamic table sink — audit proxy: emits C4 if creation throws or any
                 // later sink call throws (applyDeleteFilters, getSinkRuntimeProvider, ...). This is
                 // the delete-pushdown sink-creation site, separate from the INSERT translate path.
+                // DELETE has no column list, so all columns are reported as modified — consistent
+                // with the runtime C3/C4 (deleting a row clears the data in every column).
+                final java.util.List<String> modifiedColumns =
+                        org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
+                                resolvedTable.getResolvedSchema(), null);
                 DynamicTableSink tableSink =
                         org.apache.flink.table.planner.audit.EagerAudit.sink(
                                 contextResolvedTable,
@@ -109,7 +114,8 @@ public class DeletePushDownUtils {
                                                 Collections.emptyMap(),
                                                 context.getTableConfig(),
                                                 context.getClassLoader(),
-                                                contextResolvedTable.isTemporary()));
+                                                contextResolvedTable.isTemporary()),
+                                modifiedColumns);
                 return Optional.of(tableSink);
             }
         }

@@ -185,23 +185,40 @@ public final class EagerAudit {
             emit(false, ctx, t.getMessage());
             throw t;
         }
-        return (DynamicTableSource) wrap(false, ctx, raw);
+        return (DynamicTableSource) wrap(false, ctx, raw, null);
     }
 
     /** Creates a sink via {@code create} and returns it wrapped in an audit proxy. */
     public static DynamicTableSink sink(
             ContextResolvedTable ctx, Supplier<DynamicTableSink> create) {
+        return sink(ctx, create, null);
+    }
+
+    /**
+     * Same as {@link #sink(ContextResolvedTable, Supplier)} but also carries the SQL-intended
+     * modified columns of the sink — the proxy attaches them to every C4 it emits, so failures from
+     * later connector methods ({@code getSinkRuntimeProvider}, ability application, ...) carry the
+     * same {@code modified_columns} as the runtime C3/C4.
+     */
+    public static DynamicTableSink sink(
+            ContextResolvedTable ctx,
+            Supplier<DynamicTableSink> create,
+            List<String> modifiedColumns) {
         final DynamicTableSink raw;
         try {
             raw = create.get();
         } catch (Throwable t) {
-            emit(true, ctx, t.getMessage());
+            emit(true, ctx, t.getMessage(), modifiedColumns);
             throw t;
         }
-        return (DynamicTableSink) wrap(true, ctx, raw);
+        return (DynamicTableSink) wrap(true, ctx, raw, modifiedColumns);
     }
 
-    private static Object wrap(boolean sink, ContextResolvedTable ctx, Object delegate) {
+    private static Object wrap(
+            boolean sink,
+            ContextResolvedTable ctx,
+            Object delegate,
+            List<String> modifiedColumns) {
         if (delegate == null) {
             return null;
         }
@@ -214,7 +231,7 @@ public final class EagerAudit {
             return Proxy.newProxyInstance(
                     delegate.getClass().getClassLoader(),
                     allInterfaces(delegate.getClass()),
-                    new AuditHandler(sink, ctx, delegate));
+                    new AuditHandler(sink, ctx, delegate, modifiedColumns));
         } catch (Throwable ignored) {
             // If proxying isn't possible, fall back to the raw connector — audit must never break
             // translation (worst case: a creation failure was still caught above; later method
@@ -229,11 +246,17 @@ public final class EagerAudit {
         private final boolean sink;
         private final ContextResolvedTable ctx;
         private final Object delegate;
+        private final List<String> modifiedColumns;
 
-        AuditHandler(boolean sink, ContextResolvedTable ctx, Object delegate) {
+        AuditHandler(
+                boolean sink,
+                ContextResolvedTable ctx,
+                Object delegate,
+                List<String> modifiedColumns) {
             this.sink = sink;
             this.ctx = ctx;
             this.delegate = delegate;
+            this.modifiedColumns = modifiedColumns;
         }
 
         @Override
@@ -253,14 +276,14 @@ public final class EagerAudit {
                 result = method.invoke(delegate, args);
             } catch (InvocationTargetException e) {
                 final Throwable cause = e.getCause() != null ? e.getCause() : e;
-                emit(sink, ctx, cause.getMessage());
+                emit(sink, ctx, cause.getMessage(), modifiedColumns);
                 throw cause;
             }
             // Keep the audit on copies (pushdown / ability application produce copies).
             if (args == null
                     && "copy".equals(name)
                     && (result instanceof DynamicTableSource || result instanceof DynamicTableSink)) {
-                return wrap(sink, ctx, result);
+                return wrap(sink, ctx, result, modifiedColumns);
             }
             return result;
         }

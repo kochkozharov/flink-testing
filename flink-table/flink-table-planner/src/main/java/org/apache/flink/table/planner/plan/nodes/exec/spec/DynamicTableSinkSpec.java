@@ -85,7 +85,11 @@ public class DynamicTableSinkSpec extends DynamicTableSpecBase {
 
             final DynamicTableSinkFactory sinkFactory = factory;
             // Audit proxy: emits C4 if creation throws or any later sink call throws
-            // (getSinkRuntimeProvider, overwrite/partition abilities, ...).
+            // (getSinkRuntimeProvider, overwrite/partition abilities, ...). Carries the
+            // SQL-intended modified columns so proxy-emitted C4 matches the runtime C3/C4.
+            final java.util.List<String> modifiedColumns =
+                    org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
+                            contextResolvedTable.getResolvedSchema(), getTargetColumns());
             tableSink =
                     org.apache.flink.table.planner.audit.EagerAudit.sink(
                             contextResolvedTable,
@@ -97,7 +101,8 @@ public class DynamicTableSinkSpec extends DynamicTableSpecBase {
                                             loadOptionsFromCatalogTable(contextResolvedTable, context),
                                             context.getTableConfig(),
                                             context.getClassLoader(),
-                                            contextResolvedTable.isTemporary()));
+                                            contextResolvedTable.isTemporary()),
+                            modifiedColumns);
             if (sinkAbilities != null) {
                 sinkAbilities.forEach(spec -> spec.apply(tableSink));
             }
