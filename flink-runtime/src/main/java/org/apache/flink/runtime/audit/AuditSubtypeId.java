@@ -24,6 +24,8 @@ import org.apache.flink.annotation.Internal;
  * Audit event subtypes for connector data-plane lifecycle:
  *
  * <ul>
+ *   <li>{@link #A2} — connector authenticated and ready to read/write (no data needed)
+ *   <li>{@link #A3} — connector authentication failed
  *   <li>{@link #C1} — source read started (success)
  *   <li>{@link #C2} — source read failed
  *   <li>{@link #C3} — sink write started (success)
@@ -35,6 +37,8 @@ import org.apache.flink.annotation.Internal;
  */
 @Internal
 public enum AuditSubtypeId {
+    A2("a2"),
+    A3("a3"),
     C1("c1"),
     C2("c2"),
     C3("c3"),

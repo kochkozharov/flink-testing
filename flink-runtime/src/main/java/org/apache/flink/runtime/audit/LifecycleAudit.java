@@ -54,6 +54,20 @@ public final class LifecycleAudit {
 
     private LifecycleAudit() {}
 
+    /**
+     * A2 — connector authenticated and ready to read/write. Fired once per probe-operator open()
+     * (i.e. after the connector successfully initialised, even if no records ever flow). Carries
+     * the connector's WITH-options so the audit event can identify which system was reached.
+     */
+    public static void authSucceeded(JobID jobId, Map<String, String> withOptions) {
+        emit(AuditSubtypeId.A2, SUCCESS, jobId, withOptions, null, null);
+    }
+
+    /** A3 — connector authentication failed (creation or first connector-method call). */
+    public static void authFailed(JobID jobId, Map<String, String> withOptions, String reason) {
+        emit(AuditSubtypeId.A3, FAIL, jobId, withOptions, reason, null);
+    }
+
     /** C1 — source started reading. */
     public static void readStarted(JobID jobId, Map<String, String> withOptions) {
         emit(AuditSubtypeId.C1, SUCCESS, jobId, withOptions, null, null);

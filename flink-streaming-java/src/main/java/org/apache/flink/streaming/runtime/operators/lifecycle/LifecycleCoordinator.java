@@ -51,6 +51,7 @@ final class LifecycleCoordinator implements OperatorCoordinator {
     /** SQL-intended modified columns of the sink; null/empty for source and when unknown. */
     @Nullable private final List<String> modifiedColumns;
 
+    private boolean connectedLogged;
     private boolean startedLogged;
     private boolean failedLogged;
 
@@ -73,15 +74,26 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
     @Override
     public void handleEventFromOperator(int subtask, int attemptNumber, OperatorEvent event) {
-        if (!(event instanceof LifecycleStartedEvent) || startedLogged) {
+        if (event instanceof LifecycleConnectedEvent) {
+            if (connectedLogged) {
+                return;
+            }
+            connectedLogged = true;
+            // A2 — connector initialised, ready to read/write (even if no records yet).
+            LifecycleAudit.authSucceeded(jobId, options);
             return;
         }
-        startedLogged = true;
-        failedLogged = false; // a fresh successful start re-arms failure logging
-        if (sink) {
-            LifecycleAudit.writeStarted(jobId, options, modifiedColumns);
-        } else {
-            LifecycleAudit.readStarted(jobId, options);
+        if (event instanceof LifecycleStartedEvent) {
+            if (startedLogged) {
+                return;
+            }
+            startedLogged = true;
+            failedLogged = false; // a fresh successful start re-arms failure logging
+            if (sink) {
+                LifecycleAudit.writeStarted(jobId, options, modifiedColumns);
+            } else {
+                LifecycleAudit.readStarted(jobId, options);
+            }
         }
     }
 
@@ -115,6 +127,7 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
     @Override
     public void resetToCheckpoint(long checkpointId, @Nullable byte[] checkpointData) {
+        connectedLogged = false;
         startedLogged = false;
         failedLogged = false;
     }

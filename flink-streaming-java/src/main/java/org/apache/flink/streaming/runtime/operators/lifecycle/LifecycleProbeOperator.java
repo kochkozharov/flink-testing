@@ -38,10 +38,23 @@ public final class LifecycleProbeOperator<T> extends AbstractStreamOperator<T>
         implements OneInputStreamOperator<T, T>, OperatorEventHandler {
 
     private transient OperatorEventGateway operatorEventGateway;
+    private transient boolean connectedSent;
     private transient boolean startedSent;
 
     public void setOperatorEventGateway(OperatorEventGateway gateway) {
         this.operatorEventGateway = gateway;
+    }
+
+    @Override
+    public void open() throws Exception {
+        super.open();
+        // open() runs after upstream operators in the chain have opened (source-probe: source.open()
+        // already succeeded). Fire A2 = "connector initialised, ready to read/write" even when no
+        // data flows. C1/C3 still fire later from processElement when the first record arrives.
+        if (!connectedSent && operatorEventGateway != null) {
+            connectedSent = true;
+            operatorEventGateway.sendEventToCoordinator(new LifecycleConnectedEvent());
+        }
     }
 
     @Override
