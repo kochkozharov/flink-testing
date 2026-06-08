@@ -1326,7 +1326,28 @@ public class DataStream<T> {
         // read the output type of the input Transform to coax out errors about MissingTypeInfo
         transformation.getOutputType();
 
-        return DataStreamSink.forSink(this, sink, customSinkOperatorUidHashes);
+        // Eager A3: wrap Sink in AuditingSink so connection failures during createWriter() emit A3.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        final org.apache.flink.streaming.api.audit.AuditingSink<T> audited =
+                sink instanceof org.apache.flink.streaming.api.audit.AuditingSink
+                        ? (org.apache.flink.streaming.api.audit.AuditingSink<T>) sink
+                        : new org.apache.flink.streaming.api.audit.AuditingSink(
+                                sink, java.util.Collections.emptyMap());
+
+        // Runtime A2 / C3 / C4: chain a LifecycleProbeOperator right before the sink so it
+        // observes records flowing into the sink (LifecycleStartedEvent → C3) and translates
+        // executionAttemptFailed → A3 (pre-connect) or C4 (post-connect) via its coordinator.
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<T>
+                probeFactory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(
+                                true, audited.auditOptions(), null);
+        probeFactory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        final DataStream<T> probed =
+                this.transform("audit-probe-sink", this.getType(), probeFactory);
+
+        return DataStreamSink.forSink(probed, audited, customSinkOperatorUidHashes);
     }
 
     /**

@@ -117,6 +117,28 @@ public final class EagerAudit {
         }
     }
 
+    /**
+     * Eager auth-failure variant used by the connector proxies — any throw out of a connector
+     * method (creation, {@code getScanRuntimeProvider}, {@code getSinkRuntimeProvider}, ability
+     * application, ...) means "couldn't establish/use a connection to the external system" → A3.
+     * Schema validation is NOT a connector method and stays on the C2/C4 path via {@link
+     * #emit(boolean, ContextResolvedTable, String, List)}.
+     */
+    public static void emitAuth(boolean sink, ContextResolvedTable ctx, String reason) {
+        try {
+            if (Boolean.TRUE.equals(EMITTED.get())) {
+                return;
+            }
+            if (ctx == null) {
+                return;
+            }
+            EMITTED.set(Boolean.TRUE);
+            LifecycleAudit.authFailed(null, ctx.getResolvedTable().getOptions(), reason);
+        } catch (Throwable ignored) {
+            // Best-effort: never let audit break plan translation.
+        }
+    }
+
     // ------------------------------------------------------------------------
     //  Target-column resolution — turns the planner's {@code int[][]} target column
     //  path encoding into human-readable, SQL-intent column names.
@@ -182,7 +204,7 @@ public final class EagerAudit {
         try {
             raw = create.get();
         } catch (Throwable t) {
-            emit(false, ctx, t.getMessage());
+            emitAuth(false, ctx, t.getMessage());
             throw t;
         }
         return (DynamicTableSource) wrap(false, ctx, raw, null);
@@ -208,7 +230,7 @@ public final class EagerAudit {
         try {
             raw = create.get();
         } catch (Throwable t) {
-            emit(true, ctx, t.getMessage(), modifiedColumns);
+            emitAuth(true, ctx, t.getMessage());
             throw t;
         }
         return (DynamicTableSink) wrap(true, ctx, raw, modifiedColumns);
@@ -276,7 +298,7 @@ public final class EagerAudit {
                 result = method.invoke(delegate, args);
             } catch (InvocationTargetException e) {
                 final Throwable cause = e.getCause() != null ? e.getCause() : e;
-                emit(sink, ctx, cause.getMessage(), modifiedColumns);
+                emitAuth(sink, ctx, cause.getMessage());
                 throw cause;
             }
             // Keep the audit on copies (pushdown / ability application produce copies).

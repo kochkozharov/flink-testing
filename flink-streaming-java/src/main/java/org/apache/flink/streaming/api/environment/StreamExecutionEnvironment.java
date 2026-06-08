@@ -2281,12 +2281,45 @@ public class StreamExecutionEnvironment implements AutoCloseable {
         final TypeInformation<OUT> resolvedTypeInfo =
                 getTypeInfo(source, sourceName, Source.class, typeInfo);
 
-        return new DataStreamSource<>(
-                this,
-                checkNotNull(source, "source"),
-                checkNotNull(timestampsAndWatermarks, "timestampsAndWatermarks"),
-                checkNotNull(resolvedTypeInfo),
-                checkNotNull(sourceName));
+        // Eager A3: wrap Source in AuditingSource so connection failures during
+        // createEnumerator / SplitEnumerator.start() / createReader emit A3 (and a successful
+        // SplitEnumerator.start() emits A2 from AuditingSplitEnumerator).
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        final Source<OUT, ?, ?> audited =
+                source instanceof org.apache.flink.streaming.api.audit.AuditingSource
+                        ? source
+                        : new org.apache.flink.streaming.api.audit.AuditingSource(
+                                checkNotNull(source, "source"),
+                                sourceName,
+                                java.util.Collections.emptyMap());
+
+        final DataStreamSource<OUT> raw =
+                new DataStreamSource<>(
+                        this,
+                        audited,
+                        checkNotNull(timestampsAndWatermarks, "timestampsAndWatermarks"),
+                        checkNotNull(resolvedTypeInfo),
+                        checkNotNull(sourceName));
+
+        // Runtime C1/C2 + A2: chain a LifecycleProbeOperator right after the source. We use
+        // SingleOutputStreamOperator.transform(...) to build the probe-transformation (the same
+        // mechanism CommonExecTableSourceScan.probeSource uses for SQL), then wrap the result
+        // back into a DataStreamSource via the "deep source" constructor so the return type
+        // (and all internal callers like fromSequence/fromData) remains stable.
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<OUT>
+                probeFactory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(
+                                false,
+                                ((org.apache.flink.streaming.api.audit.AuditingSource<OUT, ?, ?>)
+                                                audited)
+                                        .auditOptions(),
+                                null);
+        probeFactory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        final org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator<OUT> probed =
+                raw.transform("audit-probe-" + sourceName, resolvedTypeInfo, probeFactory);
+        return new DataStreamSource<>(probed);
     }
 
     /**
