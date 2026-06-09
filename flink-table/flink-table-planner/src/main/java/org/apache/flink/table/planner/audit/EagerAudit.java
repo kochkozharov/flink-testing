@@ -73,11 +73,15 @@ public final class EagerAudit {
     /** Opens a fresh window for one {@code translate(...)} call. */
     public static void begin() {
         EMITTED.set(Boolean.FALSE);
+        // Tell the DataStream env.fromSource patch to back off — the planner injects its own
+        // probe via CommonExecTableSourceScan.probeSource, so a second wrap would duplicate.
+        LifecycleAudit.enterTableTranslation();
     }
 
     /** Closes the window. Always call from a {@code finally}. */
     public static void clear() {
         EMITTED.remove();
+        LifecycleAudit.exitTableTranslation();
     }
 
     /**

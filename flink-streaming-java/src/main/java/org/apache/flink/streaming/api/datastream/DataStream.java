@@ -1262,18 +1262,19 @@ public class DataStream<T> {
             ((InputTypeConfigurable) sinkFunction).setInputType(getType(), getExecutionConfig());
         }
 
-        // Wrap user-supplied legacy SinkFunction in an audit decorator and chain a probe operator
-        // right before it so the same A2/C3/C4/A3 events fire as for FLIP-191 sinkTo. Identity
-        // (connector class, modified_columns from the input TypeInformation) is captured by the
-        // probe coordinator. Skip wrap if the function is already an AuditingSinkFunction.
-        final SinkFunction<T> audited =
-                sinkFunction instanceof org.apache.flink.streaming.api.audit.AuditingSinkFunction
-                        ? sinkFunction
-                        : new org.apache.flink.streaming.api.audit.AuditingSinkFunction<>(
-                                clean(sinkFunction), null);
-        final java.util.Map<String, String> auditOpts =
-                ((org.apache.flink.streaming.api.audit.AuditingSinkFunction<T>) audited)
-                        .auditOptions();
+        // Skip audit when called from inside Table API plan translation — the planner injects its
+        // own probe via CommonExecSink.probeSink, so a second one would duplicate.
+        if (org.apache.flink.runtime.audit.LifecycleAudit.inTableTranslation()) {
+            return DataStreamSink.forSinkFunction(this, clean(sinkFunction));
+        }
+
+        // Chain a probe-operator before the sink — identity comes from ConnectorIntrospection on
+        // the raw SinkFunction. We do NOT wrap the function itself: the probe-operator + its
+        // LifecycleCoordinator handle all audit emission, and wrapping the user's sink would risk
+        // hiding capabilities its container expects to detect via instanceof (e.g. RichFunction).
+        final SinkFunction<T> cleaned = clean(sinkFunction);
+        final java.util.Map<String, String> auditOpts = new java.util.LinkedHashMap<>();
+        auditOpts.put("connector", cleaned.getClass().getSimpleName());
         final java.util.List<String> modifiedColumns =
                 org.apache.flink.streaming.api.audit.ConnectorIntrospection.modifiedColumns(
                         this.getType());
@@ -1286,7 +1287,7 @@ public class DataStream<T> {
         final DataStream<T> probed =
                 this.transform("audit-probe-sink", this.getType(), probeFactory);
 
-        return DataStreamSink.forSinkFunction(probed, audited);
+        return DataStreamSink.forSinkFunction(probed, cleaned);
     }
 
     /**
@@ -1350,33 +1351,36 @@ public class DataStream<T> {
         // read the output type of the input Transform to coax out errors about MissingTypeInfo
         transformation.getOutputType();
 
-        // Eager A3: wrap Sink in AuditingSink so connection failures during createWriter() emit A3.
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        final org.apache.flink.streaming.api.audit.AuditingSink<T> audited =
-                sink instanceof org.apache.flink.streaming.api.audit.AuditingSink
-                        ? (org.apache.flink.streaming.api.audit.AuditingSink<T>) sink
-                        : new org.apache.flink.streaming.api.audit.AuditingSink(
-                                sink, java.util.Collections.emptyMap());
+        // Skip audit for internal no-op sinks (DiscardingSink etc.) that connectors with
+        // SupportsPostCommitTopology attach during JobGraph generation — these are runtime
+        // plumbing, not user-visible connections to external systems.
+        final String sinkClass = sink.getClass().getSimpleName();
+        if ("DiscardingSink".equals(sinkClass)
+                || org.apache.flink.runtime.audit.LifecycleAudit.inTableTranslation()) {
+            return DataStreamSink.forSink(this, sink, customSinkOperatorUidHashes);
+        }
 
-        // Runtime A2 / C3 / C4: chain a LifecycleProbeOperator right before the sink so it
-        // observes records flowing into the sink (LifecycleStartedEvent → C3) and translates
-        // executionAttemptFailed → A3 (pre-connect) or C4 (post-connect) via its coordinator.
-        // Best-effort modified_columns derived from the input TypeInformation (POJO/Tuple/Row
-        // field names) — DataStream sinks have no SQL INSERT column list, so we approximate.
+        // Chain a probe-operator before the sink — identity comes from ConnectorIntrospection on
+        // the raw sink. We do NOT wrap the sink itself: wrapping hides FLIP-191 sub-interfaces
+        // (SupportsCommitter, SupportsPostCommitTopology, SupportsPreWriteTopology, ...) from
+        // DataStreamSink.forSink's dispatch, breaking transactional sinks like Iceberg/Paimon
+        // (committers never get built). Audit emission is independent of the sink — handled
+        // entirely by the probe-operator's coordinator chained ahead.
+        final java.util.Map<String, String> auditOpts =
+                org.apache.flink.streaming.api.audit.ConnectorIntrospection.sinkOptions(sink);
         final java.util.List<String> modifiedColumns =
                 org.apache.flink.streaming.api.audit.ConnectorIntrospection.modifiedColumns(
                         this.getType());
         final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<T>
                 probeFactory =
                         new org.apache.flink.streaming.runtime.operators.lifecycle
-                                .LifecycleProbeFactory<>(
-                                true, audited.auditOptions(), modifiedColumns);
+                                .LifecycleProbeFactory<>(true, auditOpts, modifiedColumns);
         probeFactory.setChainingStrategy(
                 org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
         final DataStream<T> probed =
                 this.transform("audit-probe-sink", this.getType(), probeFactory);
 
-        return DataStreamSink.forSink(probed, audited, customSinkOperatorUidHashes);
+        return DataStreamSink.forSink(probed, sink, customSinkOperatorUidHashes);
     }
 
     /**

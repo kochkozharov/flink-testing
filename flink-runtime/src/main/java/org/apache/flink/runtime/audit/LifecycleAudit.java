@@ -54,6 +54,26 @@ public final class LifecycleAudit {
 
     private LifecycleAudit() {}
 
+    // ----- Table API translation flag --------------------------------------
+    // EagerAudit.begin()/clear() set/clear this. The DataStream env.fromSource patch checks it
+    // and skips its own wrap+probe injection when we're inside Table API plan translation:
+    // the planner already injects its own probe via CommonExecTableSourceScan.probeSource for
+    // every source it materialises, so without this guard we'd double-wrap and get duplicate
+    // audit events for every SQL job.
+    private static final ThreadLocal<Boolean> IN_TABLE_TRANSLATION = new ThreadLocal<>();
+
+    public static void enterTableTranslation() {
+        IN_TABLE_TRANSLATION.set(Boolean.TRUE);
+    }
+
+    public static void exitTableTranslation() {
+        IN_TABLE_TRANSLATION.remove();
+    }
+
+    public static boolean inTableTranslation() {
+        return Boolean.TRUE.equals(IN_TABLE_TRANSLATION.get());
+    }
+
     /**
      * Walks the cause chain to its deepest root and returns its message. Flink and most connectors
      * wrap the actual error in layers of generic descriptions ({@code Task failed} → {@code Failed

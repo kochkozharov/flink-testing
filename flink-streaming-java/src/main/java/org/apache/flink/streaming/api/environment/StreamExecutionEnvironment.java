@@ -2222,24 +2222,23 @@ public class StreamExecutionEnvironment implements AutoCloseable {
 
         clean(function);
 
-        // Wrap legacy SourceFunction in an audit decorator (preserving ParallelSourceFunction if
-        // present) and chain a probe-operator right after so A2/C1/C2/A3 fire for legacy sources
-        // the same way they do for FLIP-27 fromSource. Skip wrap if already AuditingSourceFunction.
-        final SourceFunction<OUT> audited;
-        if (function instanceof org.apache.flink.streaming.api.audit.AuditingSourceFunction) {
-            audited = function;
-        } else if (isParallel) {
-            audited = new org.apache.flink.streaming.api.audit.AuditingSourceFunction.Parallel<>(
-                    function, sourceName);
-        } else {
-            audited = new org.apache.flink.streaming.api.audit.AuditingSourceFunction<>(
-                    function, sourceName);
+        // Skip audit wrap/probe when called from inside Table API plan translation.
+        if (org.apache.flink.runtime.audit.LifecycleAudit.inTableTranslation()) {
+            final StreamSource<OUT, ?> rawSrcOp = new StreamSource<>(function);
+            return new DataStreamSource<>(
+                    this, resolvedTypeInfo, rawSrcOp, isParallel, sourceName, boundedness);
         }
-        final java.util.Map<String, String> auditOpts =
-                ((org.apache.flink.streaming.api.audit.AuditingSourceFunction<OUT>) audited)
-                        .auditOptions();
 
-        final StreamSource<OUT, ?> sourceOperator = new StreamSource<>(audited);
+        // Chain a probe-operator after the legacy source — identity comes from
+        // ConnectorIntrospection on the raw function. We don't wrap the function: probe-operator
+        // + its coordinator handle audit emission independently.
+        final java.util.Map<String, String> auditOpts = new java.util.LinkedHashMap<>();
+        auditOpts.put("connector", function.getClass().getSimpleName());
+        if (sourceName != null) {
+            auditOpts.put("source.name", sourceName);
+        }
+
+        final StreamSource<OUT, ?> sourceOperator = new StreamSource<>(function);
         final DataStreamSource<OUT> raw =
                 new DataStreamSource<>(
                         this, resolvedTypeInfo, sourceOperator, isParallel, sourceName, boundedness);
@@ -2309,40 +2308,41 @@ public class StreamExecutionEnvironment implements AutoCloseable {
         final TypeInformation<OUT> resolvedTypeInfo =
                 getTypeInfo(source, sourceName, Source.class, typeInfo);
 
-        // Eager A3: wrap Source in AuditingSource so connection failures during
-        // createEnumerator / SplitEnumerator.start() / createReader emit A3 (and a successful
-        // SplitEnumerator.start() emits A2 from AuditingSplitEnumerator).
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        final Source<OUT, ?, ?> audited =
-                source instanceof org.apache.flink.streaming.api.audit.AuditingSource
-                        ? source
-                        : new org.apache.flink.streaming.api.audit.AuditingSource(
-                                checkNotNull(source, "source"),
-                                sourceName,
-                                java.util.Collections.emptyMap());
+        // Skip audit wrap/probe when called from inside Table API plan translation — the planner
+        // already injects its own probe via CommonExecTableSourceScan.probeSource; otherwise we'd
+        // get duplicate audit events for every SQL job source.
+        if (org.apache.flink.runtime.audit.LifecycleAudit.inTableTranslation()) {
+            return new DataStreamSource<>(
+                    this,
+                    checkNotNull(source, "source"),
+                    checkNotNull(timestampsAndWatermarks, "timestampsAndWatermarks"),
+                    checkNotNull(resolvedTypeInfo),
+                    checkNotNull(sourceName));
+        }
+
+        // Identity from ConnectorIntrospection on the raw source — we do NOT wrap the source
+        // itself, only chain a probe-operator after it. Audit emission is independent of the
+        // source; wrapping would risk hiding capabilities like SupportsCommitter (relevant for
+        // sinks) or future Source sub-interfaces.
+        final java.util.Map<String, String> auditOpts =
+                org.apache.flink.streaming.api.audit.ConnectorIntrospection.sourceOptions(
+                        checkNotNull(source, "source"));
+        if (sourceName != null) {
+            auditOpts.putIfAbsent("source.name", sourceName);
+        }
 
         final DataStreamSource<OUT> raw =
                 new DataStreamSource<>(
                         this,
-                        audited,
+                        source,
                         checkNotNull(timestampsAndWatermarks, "timestampsAndWatermarks"),
                         checkNotNull(resolvedTypeInfo),
                         checkNotNull(sourceName));
 
-        // Runtime C1/C2 + A2: chain a LifecycleProbeOperator right after the source. We use
-        // SingleOutputStreamOperator.transform(...) to build the probe-transformation (the same
-        // mechanism CommonExecTableSourceScan.probeSource uses for SQL), then wrap the result
-        // back into a DataStreamSource via the "deep source" constructor so the return type
-        // (and all internal callers like fromSequence/fromData) remains stable.
         final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<OUT>
                 probeFactory =
                         new org.apache.flink.streaming.runtime.operators.lifecycle
-                                .LifecycleProbeFactory<>(
-                                false,
-                                ((org.apache.flink.streaming.api.audit.AuditingSource<OUT, ?, ?>)
-                                                audited)
-                                        .auditOptions(),
-                                null);
+                                .LifecycleProbeFactory<>(false, auditOpts, null);
         probeFactory.setChainingStrategy(
                 org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
         final org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator<OUT> probed =
