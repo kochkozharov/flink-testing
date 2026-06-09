@@ -102,11 +102,14 @@ public final class AuditingSource<T, SplitT extends SourceSplit, EnumChkT>
     }
 
     private Map<String, String> identityOptions() {
-        final Map<String, String> base = new java.util.LinkedHashMap<>();
+        // Best-effort introspection of the underlying connector (KafkaSource → connector=kafka,
+        // topic=events, properties.bootstrap.servers=...) so the audit event identity matches what
+        // the Table API planner produces from DDL options.
+        final Map<String, String> base = new java.util.LinkedHashMap<>(
+                ConnectorIntrospection.sourceOptions(delegate));
         if (options != null) {
-            base.putAll(options);
+            options.forEach(base::putIfAbsent);
         }
-        base.putIfAbsent("connector", delegate.getClass().getSimpleName());
         if (objectName != null) {
             base.putIfAbsent("source.name", objectName);
         }

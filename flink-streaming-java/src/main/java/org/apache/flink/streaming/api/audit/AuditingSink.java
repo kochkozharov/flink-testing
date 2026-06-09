@@ -65,9 +65,9 @@ public final class AuditingSink<InputT> implements Sink<InputT> {
     }
 
     private Map<String, String> identityOptions() {
-        final Map<String, String> base = new java.util.LinkedHashMap<>();
-        if (options != null) base.putAll(options);
-        base.putIfAbsent("connector", delegate.getClass().getSimpleName());
+        final Map<String, String> base = new java.util.LinkedHashMap<>(
+                ConnectorIntrospection.sinkOptions(delegate));
+        if (options != null) options.forEach(base::putIfAbsent);
         return base;
     }
 }

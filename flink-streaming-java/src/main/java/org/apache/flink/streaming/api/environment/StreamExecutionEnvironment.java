@@ -2222,9 +2222,37 @@ public class StreamExecutionEnvironment implements AutoCloseable {
 
         clean(function);
 
-        final StreamSource<OUT, ?> sourceOperator = new StreamSource<>(function);
-        return new DataStreamSource<>(
-                this, resolvedTypeInfo, sourceOperator, isParallel, sourceName, boundedness);
+        // Wrap legacy SourceFunction in an audit decorator (preserving ParallelSourceFunction if
+        // present) and chain a probe-operator right after so A2/C1/C2/A3 fire for legacy sources
+        // the same way they do for FLIP-27 fromSource. Skip wrap if already AuditingSourceFunction.
+        final SourceFunction<OUT> audited;
+        if (function instanceof org.apache.flink.streaming.api.audit.AuditingSourceFunction) {
+            audited = function;
+        } else if (isParallel) {
+            audited = new org.apache.flink.streaming.api.audit.AuditingSourceFunction.Parallel<>(
+                    function, sourceName);
+        } else {
+            audited = new org.apache.flink.streaming.api.audit.AuditingSourceFunction<>(
+                    function, sourceName);
+        }
+        final java.util.Map<String, String> auditOpts =
+                ((org.apache.flink.streaming.api.audit.AuditingSourceFunction<OUT>) audited)
+                        .auditOptions();
+
+        final StreamSource<OUT, ?> sourceOperator = new StreamSource<>(audited);
+        final DataStreamSource<OUT> raw =
+                new DataStreamSource<>(
+                        this, resolvedTypeInfo, sourceOperator, isParallel, sourceName, boundedness);
+
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<OUT>
+                probeFactory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(false, auditOpts, null);
+        probeFactory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        final org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator<OUT> probed =
+                raw.transform("audit-probe-" + sourceName, resolvedTypeInfo, probeFactory);
+        return new DataStreamSource<>(probed);
     }
 
     /**
