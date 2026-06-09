@@ -204,7 +204,7 @@ public final class EagerAudit {
         try {
             raw = create.get();
         } catch (Throwable t) {
-            emitAuth(false, ctx, t.getMessage());
+            emitAuth(false, ctx, LifecycleAudit.rootCauseMessage(t));
             throw t;
         }
         return (DynamicTableSource) wrap(false, ctx, raw, null);
@@ -230,7 +230,7 @@ public final class EagerAudit {
         try {
             raw = create.get();
         } catch (Throwable t) {
-            emitAuth(true, ctx, t.getMessage());
+            emitAuth(true, ctx, LifecycleAudit.rootCauseMessage(t));
             throw t;
         }
         return (DynamicTableSink) wrap(true, ctx, raw, modifiedColumns);
@@ -298,7 +298,7 @@ public final class EagerAudit {
                 result = method.invoke(delegate, args);
             } catch (InvocationTargetException e) {
                 final Throwable cause = e.getCause() != null ? e.getCause() : e;
-                emitAuth(sink, ctx, cause.getMessage());
+                emitAuth(sink, ctx, LifecycleAudit.rootCauseMessage(cause));
                 throw cause;
             }
             // Keep the audit on copies (pushdown / ability application produce copies).

@@ -218,7 +218,7 @@ public final class DynamicSinkUtils {
             org.apache.flink.table.planner.audit.EagerAudit.emit(
                     true,
                     sinkCtx,
-                    e.getMessage(),
+                    org.apache.flink.runtime.audit.LifecycleAudit.rootCauseMessage(e),
                     org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
                             sinkCtx.getResolvedSchema(),
                             sinkModifyOperation.getTargetColumns()));

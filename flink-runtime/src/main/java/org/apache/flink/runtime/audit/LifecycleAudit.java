@@ -55,6 +55,24 @@ public final class LifecycleAudit {
     private LifecycleAudit() {}
 
     /**
+     * Walks the cause chain to its deepest root and returns its message. Flink and most connectors
+     * wrap the actual error in layers of generic descriptions ({@code Task failed} → {@code Failed
+     * to construct kafka producer} → ...); the deepest cause carries the specific reason like
+     * {@code No resolvable bootstrap urls given in bootstrap.servers}. Returns {@code null} for
+     * {@code null} input.
+     */
+    public static String rootCauseMessage(Throwable t) {
+        if (t == null) {
+            return null;
+        }
+        Throwable cur = t;
+        while (cur.getCause() != null && cur.getCause() != cur) {
+            cur = cur.getCause();
+        }
+        return cur.getMessage();
+    }
+
+    /**
      * A2 — connector authenticated and ready to read/write. Fired once per probe-operator open()
      * (i.e. after the connector successfully initialised, even if no records ever flow). Carries
      * the connector's WITH-options so the audit event can identify which system was reached.

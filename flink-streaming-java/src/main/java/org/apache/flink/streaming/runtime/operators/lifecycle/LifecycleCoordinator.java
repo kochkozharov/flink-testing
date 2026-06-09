@@ -103,13 +103,17 @@ final class LifecycleCoordinator implements OperatorCoordinator {
             return;
         }
         failedLogged = true;
-        final String msg = reason != null ? reason.getMessage() : null;
-        if (sink) {
+        final String msg = LifecycleAudit.rootCauseMessage(reason);
+        if (!connectedLogged) {
+            // open()/init never reported success — couldn't establish connection → A3.
+            LifecycleAudit.authFailed(jobId, options, msg);
+        } else if (sink) {
             LifecycleAudit.writeFailed(jobId, options, msg, modifiedColumns);
         } else {
             LifecycleAudit.readFailed(jobId, options, msg);
         }
     }
+
 
     @Override
     public void executionAttemptReady(int subtask, int attemptNumber, SubtaskGateway gateway) {}
