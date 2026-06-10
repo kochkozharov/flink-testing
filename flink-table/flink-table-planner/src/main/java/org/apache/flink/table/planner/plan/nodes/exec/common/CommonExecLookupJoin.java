@@ -272,20 +272,22 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData> {
         if (upsertMaterialize) {
             // upsertMaterialize only works on sync lookup mode, async lookup is unsupported.
             assert !isAsyncEnabled && !inputChangelogMode.containsOnly(RowKind.INSERT);
-            return createSyncLookupJoinWithState(
-                    inputTransformation,
-                    temporalTable,
-                    config,
-                    planner.getFlinkContext().getClassLoader(),
-                    lookupKeys,
-                    (TableFunction<Object>) lookupFunction,
-                    planner.createRelBuilder(),
-                    inputRowType,
-                    tableSourceRowType,
-                    resultRowType,
-                    isLeftOuterJoin,
-                    planner.getExecEnv().getConfig().isObjectReuseEnabled(),
-                    lookupKeyContainsPrimaryKey);
+            final Transformation<RowData> upsertTransform =
+                    createSyncLookupJoinWithState(
+                            inputTransformation,
+                            temporalTable,
+                            config,
+                            planner.getFlinkContext().getClassLoader(),
+                            lookupKeys,
+                            (TableFunction<Object>) lookupFunction,
+                            planner.createRelBuilder(),
+                            inputRowType,
+                            tableSourceRowType,
+                            resultRowType,
+                            isLeftOuterJoin,
+                            planner.getExecEnv().getConfig().isObjectReuseEnabled(),
+                            lookupKeyContainsPrimaryKey);
+            return probeLookup(upsertTransform, temporalTable, config, InternalTypeInfo.of(resultRowType));
         } else {
             StreamOperatorFactory<RowData> operatorFactory;
             if (isAsyncEnabled) {
@@ -318,14 +320,54 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData> {
                                 planner.getExecEnv().getConfig().isObjectReuseEnabled());
             }
 
-            return ExecNodeUtil.createOneInputTransformation(
-                    inputTransformation,
-                    createTransformationMeta(LOOKUP_JOIN_TRANSFORMATION, config),
-                    operatorFactory,
-                    InternalTypeInfo.of(resultRowType),
-                    inputTransformation.getParallelism(),
-                    false);
+            final Transformation<RowData> joinTransform =
+                    ExecNodeUtil.createOneInputTransformation(
+                            inputTransformation,
+                            createTransformationMeta(LOOKUP_JOIN_TRANSFORMATION, config),
+                            operatorFactory,
+                            InternalTypeInfo.of(resultRowType),
+                            inputTransformation.getParallelism(),
+                            false);
+            return probeLookup(joinTransform, temporalTable, config, InternalTypeInfo.of(resultRowType));
         }
+    }
+
+    /**
+     * Chains a {@link org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeOperator}
+     * right after the lookup-join. If {@code LookupFunction.open()} throws (couldn't connect to the
+     * dim table — wrong credentials, unreachable host, etc.) the upstream operator's task fails
+     * before the probe opens, so probe-coordinator emits A3 via the {@code !connectedLogged} path.
+     * Identity is the lookup table's DDL {@code WITH (...)} options.
+     */
+    private Transformation<RowData> probeLookup(
+            Transformation<RowData> input,
+            org.apache.calcite.plan.RelOptTable temporalTable,
+            ExecNodeConfig config,
+            InternalTypeInfo<RowData> outType) {
+        final java.util.Map<String, String> opts;
+        if (temporalTable
+                instanceof org.apache.flink.table.planner.plan.schema.TableSourceTable) {
+            opts =
+                    ((org.apache.flink.table.planner.plan.schema.TableSourceTable) temporalTable)
+                            .contextResolvedTable()
+                            .getResolvedTable()
+                            .getOptions();
+        } else {
+            opts = java.util.Collections.emptyMap();
+        }
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<RowData>
+                factory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(false, opts, null);
+        factory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        return ExecNodeUtil.createOneInputTransformation(
+                input,
+                createTransformationMeta("audit-lookup", "audit-lookup", "audit", config),
+                factory,
+                outType,
+                input.getParallelism(),
+                input.isParallelismConfigured());
     }
 
     protected abstract Transformation<RowData> createSyncLookupJoinWithState(

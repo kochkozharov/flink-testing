@@ -69,6 +69,30 @@ public final class ConnectorIntrospection {
         return opts;
     }
 
+    /**
+     * Async-function identity for {@link
+     * org.apache.flink.streaming.api.datastream.AsyncDataStream}: connector kind + per-connector
+     * options (eg HBase zookeeper quorum + table). Unknown async functions fall back to {@code
+     * connector=<SimpleClassName>} same as source/sink dispatch.
+     */
+    public static Map<String, String> asyncFunctionOptions(Object func) {
+        final Map<String, String> opts = new LinkedHashMap<>();
+        if (func == null) {
+            return opts;
+        }
+        final String fqn = func.getClass().getName();
+        // Flink HBase connector lookup functions (both async and sync variants, HBase 1.x and 2.x):
+        //   org.apache.flink.connector.hbase{1,2}.source.HBaseRowDataAsyncLookupFunction
+        //   org.apache.flink.connector.hbase{1,2}.source.HBaseRowDataLookupFunction
+        if (fqn.contains(".hbase") && fqn.contains("LookupFunction")) {
+            opts.put("connector", "hbase");
+            hbaseLookup(func, opts);
+        } else {
+            opts.put("connector", func.getClass().getSimpleName());
+        }
+        return opts;
+    }
+
     /** Sink-side identity: connector kind + topic/table + relevant kafka/jdbc options. */
     public static Map<String, String> sinkOptions(Object sink) {
         final Map<String, String> opts = new LinkedHashMap<>();
@@ -167,6 +191,45 @@ public final class ConnectorIntrospection {
                 final String full = identifier.toString();
                 final int dot = full.lastIndexOf('.');
                 opts.put("catalog-table", dot >= 0 ? full.substring(dot + 1) : full);
+            }
+        }
+    }
+
+    private static void hbaseLookup(Object func, Map<String, String> opts) {
+        // HBaseRowData{Async}LookupFunction has fields:
+        //   String hTableName            ← target HBase table
+        //   transient Configuration configuration  (HBase 2.x), OR
+        //   byte[] serializedConfig                (some versions serialize the conf)
+        // The hadoop Configuration carries "hbase.zookeeper.quorum" and friends.
+        final Object tableName = readField(func, "hTableName");
+        if (tableName instanceof String) {
+            opts.put("table-name", (String) tableName);
+        }
+        // Try common field names — different connector versions use different ones.
+        Object conf = readField(func, "configuration");
+        if (conf == null) {
+            conf = readField(func, "hbaseConf");
+        }
+        if (conf == null) {
+            conf = readField(func, "config");
+        }
+        if (conf != null && !conf.getClass().isArray()) {
+            // org.apache.hadoop.conf.Configuration#get(String)
+            try {
+                final String quorum =
+                        (String)
+                                conf.getClass()
+                                        .getMethod("get", String.class)
+                                        .invoke(conf, "hbase.zookeeper.quorum");
+                putIfPresent(opts, "properties.hbase.zookeeper.quorum", quorum);
+                final String znode =
+                        (String)
+                                conf.getClass()
+                                        .getMethod("get", String.class)
+                                        .invoke(conf, "zookeeper.znode.parent");
+                putIfPresent(opts, "properties.zookeeper.znode.parent", znode);
+            } catch (Throwable ignored) {
+                // not a hadoop Configuration, or method missing
             }
         }
     }

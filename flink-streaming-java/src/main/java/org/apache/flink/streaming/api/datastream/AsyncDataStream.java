@@ -97,7 +97,29 @@ public class AsyncDataStream {
                         mode,
                         asyncRetryStrategy);
 
-        return in.transform("async wait operator", outTypeInfo, operatorFactory);
+        final SingleOutputStreamOperator<OUT> asyncStream =
+                in.transform("async wait operator", outTypeInfo, operatorFactory);
+
+        // Skip audit when called from Table API translation (Table API may use AsyncDataStream
+        // internally — its own probe-injection already covers identity).
+        if (org.apache.flink.runtime.audit.LifecycleAudit.inTableTranslation()) {
+            return asyncStream;
+        }
+
+        // Audit-probe right after the AsyncWaitOperator — identity via reflection on the
+        // AsyncFunction (eg HBase quorum+table), falling back to connector=<SimpleClassName>.
+        // Same coordinator-driven A2/C1/C2/A3 lifecycle as CommonExecLookupJoin.probeLookup
+        // on the SQL side.
+        final java.util.Map<String, String> auditOpts =
+                org.apache.flink.streaming.api.audit.ConnectorIntrospection.asyncFunctionOptions(
+                        func);
+        final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<OUT>
+                probeFactory =
+                        new org.apache.flink.streaming.runtime.operators.lifecycle
+                                .LifecycleProbeFactory<>(false, auditOpts, null);
+        probeFactory.setChainingStrategy(
+                org.apache.flink.streaming.api.operators.ChainingStrategy.ALWAYS);
+        return asyncStream.transform("audit-probe-async", outTypeInfo, probeFactory);
     }
 
     /**
