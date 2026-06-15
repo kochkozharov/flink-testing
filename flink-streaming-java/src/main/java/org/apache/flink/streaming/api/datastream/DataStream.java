@@ -1368,9 +1368,12 @@ public class DataStream<T> {
         // entirely by the probe-operator's coordinator chained ahead.
         final java.util.Map<String, String> auditOpts =
                 org.apache.flink.streaming.api.audit.ConnectorIntrospection.sinkOptions(sink);
+        // sinkColumns reflects on the sink instance first (eg IcebergSink.flinkRowType) before
+        // falling back to TypeInformation — covers DataStream<RowData> pipelines that have no
+        // field names in the type system.
         final java.util.List<String> modifiedColumns =
-                org.apache.flink.streaming.api.audit.ConnectorIntrospection.modifiedColumns(
-                        this.getType());
+                org.apache.flink.streaming.api.audit.ConnectorIntrospection.sinkColumns(
+                        sink, this.getType());
         final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<T>
                 probeFactory =
                         new org.apache.flink.streaming.runtime.operators.lifecycle

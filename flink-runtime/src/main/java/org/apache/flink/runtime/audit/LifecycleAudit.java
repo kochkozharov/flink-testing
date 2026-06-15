@@ -47,6 +47,7 @@ public final class LifecycleAudit {
     private static final String SUCCESS = "SUCCESS";
     private static final String FAIL = "FAIL";
     private static final String UNDEFINED = "UNDEFINED";
+    private static final String NO_COLUMNS_SENTINEL = "NO_DATA";
 
     private static final DateTimeFormatter DATE =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -167,10 +168,15 @@ public final class LifecycleAudit {
             }
             // SQL-intended modified columns of the sink (target columns of the INSERT/UPDATE).
             // For C3/C4 it carries what the sink WAS ASKED to write; not what the connector
-            // actually persisted. Null/empty for source events and when unknown.
-            if (modifiedColumns != null && !modifiedColumns.isEmpty()) {
-                props.add("modified_columns=[" + String.join(",", modifiedColumns) + "]");
-            }
+            // actually persisted. Downstream-pipeline constraint: this field must ALWAYS be
+            // present and non-empty in audit events, so source events (where the concept
+            // doesn't apply) and sinks whose schema couldn't be extracted fall back to a
+            // sentinel value. Enforced centrally here so no caller path can bypass it.
+            final String columnsValue =
+                    (modifiedColumns == null || modifiedColumns.isEmpty())
+                            ? NO_COLUMNS_SENTINEL
+                            : String.join(",", modifiedColumns);
+            props.add("modified_columns=[" + columnsValue + "]");
 
             final AuditEvent event =
                     AuditEvent.builder()
