@@ -21,6 +21,7 @@ package org.apache.flink.streaming.runtime.operators.lifecycle;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.audit.LifecycleAudit;
+import org.apache.flink.runtime.audit.LifecycleAuditRegistry;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.metrics.scope.ScopeFormat;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
@@ -43,7 +44,8 @@ import java.util.concurrent.CompletableFuture;
  * session-safe (never throws) — so this stays inert in session mode.
  */
 @Internal
-final class LifecycleCoordinator implements OperatorCoordinator {
+final class LifecycleCoordinator
+        implements OperatorCoordinator, LifecycleAuditRegistry.JobFailureHandler {
 
     private final boolean sink;
     private final Map<String, String> options;
@@ -67,10 +69,18 @@ final class LifecycleCoordinator implements OperatorCoordinator {
     }
 
     @Override
-    public void start() {}
+    public void start() {
+        // Register so DefaultExecutionGraph job-level FAILING/FAILED transitions reach us — needed
+        // to emit C2/C4 when the failure lands in a sink-chain task we don't probe directly
+        // (eg Iceberg's pre-commit aggregator: our probe-task gets CANCELLED, not FAILED, so
+        // executionAttemptFailed never fires here).
+        LifecycleAuditRegistry.register(jobId, this);
+    }
 
     @Override
-    public void close() {}
+    public void close() {
+        LifecycleAuditRegistry.unregister(jobId, this);
+    }
 
     @Override
     public void handleEventFromOperator(int subtask, int attemptNumber, OperatorEvent event) {
@@ -99,11 +109,35 @@ final class LifecycleCoordinator implements OperatorCoordinator {
 
     @Override
     public void executionAttemptFailed(int subtask, int attemptNumber, @Nullable Throwable reason) {
+        // Skip "empty" failures — cascade-cancel often surfaces here as null or
+        // CancellationException without the real root cause (the actual failure happened in a
+        // different task). Defer to LifecycleAuditRegistry.notifyJobFailed from the job-level
+        // FAILING transition, which carries the proper cause.
+        if (reason == null
+                || reason instanceof java.util.concurrent.CancellationException
+                || LifecycleAudit.rootCauseMessage(reason) == null) {
+            return;
+        }
+        emitFailed(reason);
+    }
+
+    /**
+     * Called by {@link LifecycleAuditRegistry} on job-wide FAILING/FAILED transitions. Catches the
+     * failures whose owning task isn't our probe-task (eg Iceberg V2 pre-commit aggregator failure
+     * → our probe-task gets CANCELLED, executionAttemptFailed never fires). Idempotent against the
+     * per-attempt path via {@link #failedLogged}.
+     */
+    @Override
+    public void onJobFailed(@Nullable Throwable cause) {
+        emitFailed(cause);
+    }
+
+    private void emitFailed(@Nullable Throwable cause) {
         if (failedLogged) {
             return;
         }
         failedLogged = true;
-        final String msg = LifecycleAudit.rootCauseMessage(reason);
+        final String msg = LifecycleAudit.rootCauseMessage(cause);
         if (!connectedLogged) {
             // open()/init never reported success — couldn't establish connection → A3.
             LifecycleAudit.authFailed(jobId, options, msg);

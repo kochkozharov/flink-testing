@@ -1164,6 +1164,15 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     error);
 
             stateTimestamps[newState.ordinal()] = System.currentTimeMillis();
+            // Fan job-level FAILING/FAILED out to audit coordinators BEFORE the regular listeners
+            // run. Listeners may trigger cancellation cascades that close operator coordinators,
+            // and if a coordinator is closed (and thus deregistered) before we fan out, its audit
+            // path (C2/C4) is silently dropped. The coordinator's own idempotency latch ensures
+            // we don't double-emit if executionAttemptFailed also fires later.
+            if (newState == JobStatus.FAILING || newState == JobStatus.FAILED) {
+                org.apache.flink.runtime.audit.LifecycleAuditRegistry.notifyJobFailed(
+                        getJobID(), error);
+            }
             notifyJobStatusChange(newState);
             notifyJobStatusHooks(newState, error);
             return true;
