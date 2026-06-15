@@ -25,17 +25,21 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Synthesises the {@code objectName} field of an audit event as
- * {@code <host(s)>:<connector>:<database>:<table>} from a connector's options map. Each part is
- * dropped when not derivable (eg Kafka has no database concept). Connector is always present;
- * falls back to {@link #UNDEFINED}.
+ * Builds the audit event's {@code objectName} as {@code <host>:<connector>:<database>:<table>}.
+ * Missing parts are dropped; {@code connector} is always present (falls back to {@link #UNDEFINED}).
  *
- * <p>The same heuristics run on opts from SQL DDL ({@code getResolvedTable().getOptions()}),
- * DataStream reflection ({@code ConnectorIntrospection.{source,sink,asyncFunction}Options}), or
- * lookup-join — so every emit path ends up with the same objectName shape.
+ * <p>Field-driven: each part is extracted by trying a list of common key names in priority order
+ * — no connector-name dispatch. A new SQL connector that follows standard naming conventions
+ * ({@code properties.bootstrap.servers}, {@code url}, {@code table-name}, {@code database-name},
+ * ...) works without code changes. To support a new convention, add a key to the relevant list.
  *
- * <p>Targets four connectors: Kafka, ClickHouse, Iceberg, HBase. Adding a new connector usually
- * means recognising one or two extra option keys here, not a new code path.
+ * <p>Sources of opts:
+ * <ul>
+ *   <li>Table API DDL — {@code getResolvedTable().getOptions()} surfaces every {@code WITH (...)}
+ *       option verbatim.</li>
+ *   <li>DataStream — {@code ConnectorIntrospection.{source,sink,asyncFunction}Options} fills the
+ *       same standard keys via reflection, so the same extraction logic works on both sides.</li>
+ * </ul>
  */
 @Internal
 final class ObjectNameBuilder {
@@ -45,210 +49,192 @@ final class ObjectNameBuilder {
     private ObjectNameBuilder() {}
 
     static String build(Map<String, String> opts) {
-        final String host = host(opts);
-        final String connector = opts == null ? null : opts.get("connector");
-        final String db = database(opts);
-        final String table = tableName(opts);
-
-        final StringBuilder sb = new StringBuilder();
-        if (host != null && !host.isEmpty()) {
-            sb.append(host).append(':');
+        if (opts == null) {
+            return UNDEFINED;
         }
-        sb.append(connector == null || connector.isEmpty() ? UNDEFINED : connector);
-        if (db != null && !db.isEmpty()) {
-            sb.append(':').append(db);
-        }
-        if (table != null && !table.isEmpty()) {
-            sb.append(':').append(table);
-        }
-        return sb.toString();
+        return join(host(opts), opts.get("connector"), database(opts), table(opts));
     }
 
-    // ----- host -----------------------------------------------------------------------------
+    // ========================================================================
+    //  Host — address of the external system.
+    //  Priority: direct address keys → URL-like (need scheme stripping)
+    //          → Iceberg-SQL src-catalog JSON (last because most specific).
+    // ========================================================================
 
-    /**
-     * Address(es) of the external system. The lookup order matches the four supported connectors:
-     * Iceberg-SQL (src-catalog JSON), Kafka, HBase, ClickHouse (and DataStream-side Iceberg whose
-     * reflection puts {@code uri}/{@code warehouse} into the map directly).
-     */
+    /** Verbatim host[:port] keys — used as-is, no parsing. */
+    private static final String[] HOST_DIRECT = {
+        "properties.bootstrap.servers",       // Kafka (and any kafka-* connector)
+        "zookeeper.quorum",                   // HBase SQL DDL
+        "properties.hbase.zookeeper.quorum",  // HBase DataStream lookup
+        "hostname", "host", "endpoint",       // generic SQL conventions
+    };
+
+    /** URL-like keys — scheme stripped to leave host[:port]. */
+    private static final String[] HOST_URL_LIKE = {
+        "url",                                // JDBC: jdbc:clickhouse://host:port
+        "uri",                                // REST/HTTP
+        "warehouse",                          // Iceberg: s3://bucket, hdfs://nn:8020/...
+    };
+
     private static String host(Map<String, String> opts) {
-        if (opts == null) {
-            return null;
-        }
-
-        // Iceberg-SQL: every DDL option lands in one JSON-encoded "src-catalog" value, so plain
-        // map lookups miss everything. Pluck the catalog URI out of it.
-        final String icebergSqlUri = srcCatalogValue(opts, "uri");
-        if (icebergSqlUri != null) {
-            return extractAuthority(icebergSqlUri);
-        }
-        final String icebergSqlWarehouse = srcCatalogValue(opts, "warehouse");
-        if (icebergSqlWarehouse != null) {
-            return extractAuthority(icebergSqlWarehouse);
-        }
-
-        // Kafka: SQL DDL and DataStream reflection both use "properties.bootstrap.servers".
-        final String kafka = opts.get("properties.bootstrap.servers");
-        if (kafka != null && !kafka.isEmpty()) {
-            return kafka;
-        }
-
-        // HBase: SQL DDL uses bare "zookeeper.quorum"; our async-lookup reflection prefixes it
-        // with "properties.hbase." to keep the namespace flat with other "properties.*" keys.
-        for (String key :
-                new String[] {"zookeeper.quorum", "properties.hbase.zookeeper.quorum"}) {
-            final String v = opts.get(key);
-            if (v != null && !v.isEmpty()) {
+        for (String k : HOST_DIRECT) {
+            final String v = opts.get(k);
+            if (notEmpty(v)) {
                 return v;
             }
         }
-
-        // ClickHouse-SQL: "url"="jdbc:clickhouse://host:port".
-        // Iceberg-DataStream: ConnectorIntrospection reflects "uri" (REST) or "warehouse" (Hadoop)
-        // out of the TableLoader's catalog properties.
-        for (String key : new String[] {"url", "uri", "warehouse"}) {
-            final String v = opts.get(key);
-            if (v != null && !v.isEmpty()) {
-                final String parsed = extractAuthority(v);
-                if (parsed != null && !parsed.isEmpty()) {
-                    return parsed;
-                }
+        for (String k : HOST_URL_LIKE) {
+            final String auth = extractAuthority(opts.get(k));
+            if (notEmpty(auth)) {
+                return auth;
+            }
+        }
+        // Iceberg SQL folds every catalog option into one JSON-encoded "src-catalog" value.
+        for (String k : new String[] {"uri", "warehouse"}) {
+            final String auth = extractAuthority(srcCatalogValue(opts, k));
+            if (notEmpty(auth)) {
+                return auth;
             }
         }
         return null;
     }
 
-    // ----- database -------------------------------------------------------------------------
+    // ========================================================================
+    //  Database — container (db/schema/namespace) the table lives in.
+    //  Some connectors fold it into a compound identifier we split here.
+    // ========================================================================
 
-    /**
-     * The container the table lives in (database / namespace). Some connectors have an explicit
-     * key for it; others fold it into a compound table identifier that we split.
-     */
+    /** Direct db-name keys. */
+    private static final String[] DB_DIRECT = {
+        "database-name",   // ClickHouse, JDBC, generic SQL
+        "database",        // alternative naming
+        "catalog-database",// catalog-based connectors
+        "schema-name",     // some JDBC connectors
+        "namespace",       // some catalog/object-store connectors
+    };
+
     private static String database(Map<String, String> opts) {
-        if (opts == null) {
-            return null;
+        for (String k : DB_DIRECT) {
+            final String v = opts.get(k);
+            if (notEmpty(v)) {
+                return v;
+            }
         }
-
-        // Iceberg-SQL: "catalog-database":"db" in src-catalog JSON.
-        final String icebergSql = srcCatalogValue(opts, "catalog-database");
-        if (icebergSql != null) {
-            return icebergSql;
+        final String catDb = srcCatalogValue(opts, "catalog-database");
+        if (notEmpty(catDb)) {
+            return catDb;
         }
-
-        // ClickHouse-SQL: explicit "database-name" DDL option.
-        final String clickhouse = opts.get("database-name");
-        if (clickhouse != null && !clickhouse.isEmpty()) {
-            return clickhouse;
-        }
-
-        // Iceberg-DataStream: ConnectorIntrospection puts the full "db.table" identifier into
-        // "table"; split it here so buildObjectName gets the db part separately.
+        // Compound identifier "db.table" in "table" (eg DataStream Iceberg).
         final String compoundDot = opts.get("table");
-        if (compoundDot != null) {
+        if (notEmpty(compoundDot)) {
             final int dot = compoundDot.lastIndexOf('.');
             if (dot > 0) {
                 return compoundDot.substring(0, dot);
             }
         }
-
-        // HBase: SQL DDL "table-name" may be "namespace:name". Extract the namespace.
+        // Compound identifier "namespace:name" in "table-name" (HBase).
         final String compoundColon = opts.get("table-name");
-        if (compoundColon != null) {
-            final int col = compoundColon.lastIndexOf(':');
-            if (col > 0) {
-                return compoundColon.substring(0, col);
+        if (notEmpty(compoundColon)) {
+            final int colon = compoundColon.lastIndexOf(':');
+            if (colon > 0) {
+                return compoundColon.substring(0, colon);
             }
         }
         return null;
     }
 
-    // ----- table ----------------------------------------------------------------------------
+    // ========================================================================
+    //  Table — leaf table/topic name.
+    //  Compound identifiers (db.table, namespace:table) are stripped to the leaf.
+    // ========================================================================
 
-    /**
-     * Leaf table/topic name. Per-connector key precedence; compound identifiers ({@code db.table},
-     * {@code namespace:table}) are stripped so only the trailing part remains.
-     */
-    private static String tableName(Map<String, String> opts) {
-        if (opts == null) {
-            return null;
+    private static String table(Map<String, String> opts) {
+        final String catTable = srcCatalogValue(opts, "catalog-table");
+        if (notEmpty(catTable)) {
+            return catTable;
         }
-
-        // Iceberg-SQL: "catalog-table":"events" in src-catalog JSON.
-        final String icebergSql = srcCatalogValue(opts, "catalog-table");
-        if (icebergSql != null) {
-            return icebergSql;
-        }
-
-        // ClickHouse-SQL + HBase: "table-name". HBase may carry "namespace:name" — drop ns.
+        // SQL DDL "table-name", possibly "namespace:name".
         final String tn = opts.get("table-name");
-        if (tn != null && !tn.isEmpty()) {
-            final int col = tn.lastIndexOf(':');
-            return col >= 0 ? tn.substring(col + 1) : tn;
+        if (notEmpty(tn)) {
+            final int colon = tn.lastIndexOf(':');
+            return colon >= 0 ? tn.substring(colon + 1) : tn;
         }
-
-        // Kafka: no database concept — topic IS the leaf.
+        // Kafka — topic is the leaf.
         final String topic = opts.get("topic");
-        if (topic != null && !topic.isEmpty()) {
+        if (notEmpty(topic)) {
             return topic;
         }
-
-        // Iceberg-DataStream: full identifier in "table"; "catalog-table" carries leaf only.
+        // Compound "db.table" (DataStream Iceberg).
         final String compound = opts.get("table");
-        if (compound != null && !compound.isEmpty()) {
+        if (notEmpty(compound)) {
             final int dot = compound.lastIndexOf('.');
             return dot >= 0 ? compound.substring(dot + 1) : compound;
         }
-        final String leaf = opts.get("catalog-table");
-        if (leaf != null && !leaf.isEmpty()) {
-            return leaf;
+        // File-based / catalog-based fallbacks.
+        for (String k : new String[] {"catalog-table", "path"}) {
+            final String v = opts.get(k);
+            if (notEmpty(v)) {
+                return v;
+            }
         }
         return null;
     }
 
-    // ----- shared helpers -------------------------------------------------------------------
+    // ========================================================================
+    //  Helpers
+    // ========================================================================
+
+    private static String join(String host, String connector, String database, String table) {
+        final StringBuilder sb = new StringBuilder();
+        if (notEmpty(host)) {
+            sb.append(host).append(':');
+        }
+        sb.append(notEmpty(connector) ? connector : UNDEFINED);
+        if (notEmpty(database)) {
+            sb.append(':').append(database);
+        }
+        if (notEmpty(table)) {
+            sb.append(':').append(table);
+        }
+        return sb.toString();
+    }
+
+    private static boolean notEmpty(String s) {
+        return s != null && !s.isEmpty();
+    }
 
     /**
-     * Strips {@code scheme://} prefix and {@code /path?query} suffix from a URL, leaving the
-     * authority part ({@code host[:port]}). Returns the input unchanged when neither is present —
-     * useful for already-bare hosts. Handles double schemes like {@code jdbc:clickhouse://...}
-     * by always matching the LAST {@code "://"}, so the kept rest is just the address.
+     * Strips {@code scheme://} prefix and trailing {@code /path?query} — leaves {@code host[:port]}.
+     * Handles double-scheme JDBC URLs ({@code jdbc:clickhouse://host:port}) by matching the LAST
+     * {@code "://"}. Returns null for null/empty input; returns input unchanged when neither
+     * prefix nor suffix is present (already a bare host).
      */
     private static String extractAuthority(String url) {
-        if (url == null) {
+        if (!notEmpty(url)) {
             return null;
         }
-        final int schemeIdx = url.indexOf("://");
+        final int schemeIdx = url.lastIndexOf("://");
         String rest = schemeIdx >= 0 ? url.substring(schemeIdx + 3) : url;
-        int cut = -1;
-        final int slash = rest.indexOf('/');
-        if (slash >= 0) {
-            cut = slash;
-        }
+        int cut = rest.indexOf('/');
         final int q = rest.indexOf('?');
         if (q >= 0 && (cut < 0 || q < cut)) {
             cut = q;
         }
-        if (cut >= 0) {
-            rest = rest.substring(0, cut);
-        }
-        return rest;
+        return cut >= 0 ? rest.substring(0, cut) : rest;
     }
 
     /**
-     * Iceberg-SQL specifically folds every DDL option (incl. nested {@code catalog-props})
-     * into a single JSON-encoded value under the {@code src-catalog} key. Rather than bring a
-     * JSON parser into flink-runtime, we match {@code "key":"value"} with a regex — works for
-     * both top-level and nested keys. Returns {@code null} when src-catalog is missing or the
-     * key isn't found.
+     * Iceberg-SQL folds every DDL option (incl. nested {@code catalog-props}) into one
+     * JSON-encoded value at the {@code src-catalog} key. Regex-extracts {@code "key":"value"} —
+     * avoids pulling a JSON parser into flink-runtime. Returns null if the key isn't present.
      */
     private static String srcCatalogValue(Map<String, String> opts, String key) {
         final String src = opts.get("src-catalog");
-        if (src == null || src.isEmpty()) {
+        if (!notEmpty(src)) {
             return null;
         }
-        final Matcher m =
-                Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]*)\"")
-                        .matcher(src);
+        final Matcher m = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]*)\"")
+                .matcher(src);
         return m.find() ? m.group(1) : null;
     }
 }

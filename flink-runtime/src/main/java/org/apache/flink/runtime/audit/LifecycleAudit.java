@@ -154,11 +154,7 @@ public final class LifecycleAudit {
             List<String> modifiedColumns) {
         try {
             final SessionInfo s = Sessions.forJob(jobId);
-            final String connector = opts == null ? null : opts.get("connector");
-            final String table = tableName(opts);
-            final String objectName =
-                    (connector == null ? UNDEFINED : connector)
-                            + (table == null ? "" : ":" + table);
+            final String objectName = ObjectNameBuilder.build(opts);
 
             final List<String> props = new ArrayList<>();
             if (opts != null) {
@@ -202,17 +198,4 @@ public final class LifecycleAudit {
         }
     }
 
-    /** Best-effort real table/topic name from common WITH-option keys. */
-    private static String tableName(Map<String, String> opts) {
-        if (opts == null) {
-            return null;
-        }
-        for (String key : new String[] {"table-name", "topic", "path", "catalog-table"}) {
-            final String v = opts.get(key);
-            if (v != null && !v.isEmpty()) {
-                return v;
-            }
-        }
-        return null;
-    }
 }
