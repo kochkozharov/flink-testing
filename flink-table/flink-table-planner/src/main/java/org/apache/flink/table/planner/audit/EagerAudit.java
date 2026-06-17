@@ -20,8 +20,10 @@ package org.apache.flink.table.planner.audit;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.audit.LifecycleAudit;
+import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ContextResolvedTable;
+import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -37,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -68,11 +71,15 @@ public final class EagerAudit {
 
     private static final ThreadLocal<Boolean> EMITTED = new ThreadLocal<>();
 
+    /** Per-translation CatalogManager — read by {@link #augmentWithCatalogOptions}. */
+    private static final ThreadLocal<CatalogManager> CURRENT_CATALOG_MANAGER = new ThreadLocal<>();
+
     private EagerAudit() {}
 
     /** Opens a fresh window for one {@code translate(...)} call. */
-    public static void begin() {
+    public static void begin(CatalogManager catalogManager) {
         EMITTED.set(Boolean.FALSE);
+        CURRENT_CATALOG_MANAGER.set(catalogManager);
         // Tell the DataStream env.fromSource patch to back off — the planner injects its own
         // probe via CommonExecTableSourceScan.probeSource, so a second wrap would duplicate.
         LifecycleAudit.enterTableTranslation();
@@ -81,6 +88,7 @@ public final class EagerAudit {
     /** Closes the window. Always call from a {@code finally}. */
     public static void clear() {
         EMITTED.remove();
+        CURRENT_CATALOG_MANAGER.remove();
         LifecycleAudit.exitTableTranslation();
     }
 
@@ -110,7 +118,8 @@ public final class EagerAudit {
                 return; // nothing to identify — don't consume the emit slot
             }
             EMITTED.set(Boolean.TRUE);
-            final Map<String, String> options = ctx.getResolvedTable().getOptions();
+            final Map<String, String> options =
+                    augmentWithCatalogOptions(ctx, ctx.getResolvedTable().getOptions());
             if (sink) {
                 LifecycleAudit.writeFailed(null, options, reason, modifiedColumns);
             } else {
@@ -137,10 +146,77 @@ public final class EagerAudit {
                 return;
             }
             EMITTED.set(Boolean.TRUE);
-            LifecycleAudit.authFailed(null, ctx.getResolvedTable().getOptions(), reason);
+            LifecycleAudit.authFailed(
+                    null,
+                    augmentWithCatalogOptions(ctx, ctx.getResolvedTable().getOptions()),
+                    reason);
         } catch (Throwable ignored) {
             // Best-effort: never let audit break plan translation.
         }
+    }
+
+    // ------------------------------------------------------------------------
+    //  Catalog-options augmentation — folds CREATE CATALOG options into the
+    //  table-level opts as flat keys so ObjectNameBuilder can read them.
+    //  Source: CatalogManager.getCatalogDescriptor(name).getConfiguration()
+    //  (covers DDL- and catalog-store-registered catalogs). Table-level opts
+    //  win (putIfAbsent).
+    // ------------------------------------------------------------------------
+
+    /**
+     * Augments {@code opts} with catalog construction options (flat keys) + fallback
+     * {@code connector=<catalogName>} when missing. Returns a fresh map when augmented,
+     * or {@code opts} unchanged when nothing useful can be added.
+     */
+    public static Map<String, String> augmentWithCatalogOptions(
+            ContextResolvedTable ctx, Map<String, String> opts) {
+        if (ctx == null || opts == null) {
+            return opts;
+        }
+        final ObjectIdentifier id = ctx.getIdentifier();
+        final String catalogName = id == null ? null : id.getCatalogName();
+        final Map<String, String> catalogProps = lookupCatalogOptions(catalogName);
+
+        if (catalogProps.isEmpty() && opts.containsKey("connector")) {
+            return opts;
+        }
+
+        final Map<String, String> augmented = new LinkedHashMap<>(opts);
+
+        if (catalogName != null) {
+            augmented.putIfAbsent("catalog-name", catalogName);
+            if (id.getDatabaseName() != null) {
+                augmented.putIfAbsent("catalog-database", id.getDatabaseName());
+            }
+            if (id.getObjectName() != null) {
+                augmented.putIfAbsent("catalog-table", id.getObjectName());
+            }
+        }
+
+        for (Map.Entry<String, String> e : catalogProps.entrySet()) {
+            if (e.getKey() == null || e.getValue() == null) {
+                continue;
+            }
+            augmented.putIfAbsent(e.getKey(), e.getValue());
+        }
+
+        if (catalogName != null && !augmented.containsKey("connector")) {
+            augmented.put("connector", catalogName);
+        }
+        return augmented;
+    }
+
+    private static Map<String, String> lookupCatalogOptions(String catalogName) {
+        if (catalogName == null) {
+            return Collections.emptyMap();
+        }
+        final CatalogManager cm = CURRENT_CATALOG_MANAGER.get();
+        if (cm == null) {
+            return Collections.emptyMap();
+        }
+        return cm.getCatalogDescriptor(catalogName)
+                .map(d -> d.getConfiguration().toMap())
+                .orElse(Collections.emptyMap());
     }
 
     // ------------------------------------------------------------------------

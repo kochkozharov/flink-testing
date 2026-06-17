@@ -21,8 +21,6 @@ package org.apache.flink.runtime.audit;
 import org.apache.flink.annotation.Internal;
 
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Builds the audit event's {@code objectName} as {@code <host>:<connector>:<database>:<table>}.
@@ -89,13 +87,6 @@ final class ObjectNameBuilder {
                 return auth;
             }
         }
-        // Iceberg SQL folds every catalog option into one JSON-encoded "src-catalog" value.
-        for (String k : new String[] {"uri", "warehouse"}) {
-            final String auth = extractAuthority(srcCatalogValue(opts, k));
-            if (notEmpty(auth)) {
-                return auth;
-            }
-        }
         return null;
     }
 
@@ -119,10 +110,6 @@ final class ObjectNameBuilder {
             if (notEmpty(v)) {
                 return v;
             }
-        }
-        final String catDb = srcCatalogValue(opts, "catalog-database");
-        if (notEmpty(catDb)) {
-            return catDb;
         }
         // Compound identifier "db.table" in "table" (eg DataStream Iceberg).
         final String compoundDot = opts.get("table");
@@ -149,10 +136,6 @@ final class ObjectNameBuilder {
     // ========================================================================
 
     private static String table(Map<String, String> opts) {
-        final String catTable = srcCatalogValue(opts, "catalog-table");
-        if (notEmpty(catTable)) {
-            return catTable;
-        }
         // SQL DDL "table-name", possibly "namespace:name".
         final String tn = opts.get("table-name");
         if (notEmpty(tn)) {
@@ -223,18 +206,4 @@ final class ObjectNameBuilder {
         return cut >= 0 ? rest.substring(0, cut) : rest;
     }
 
-    /**
-     * Iceberg-SQL folds every DDL option (incl. nested {@code catalog-props}) into one
-     * JSON-encoded value at the {@code src-catalog} key. Regex-extracts {@code "key":"value"} —
-     * avoids pulling a JSON parser into flink-runtime. Returns null if the key isn't present.
-     */
-    private static String srcCatalogValue(Map<String, String> opts, String key) {
-        final String src = opts.get("src-catalog");
-        if (!notEmpty(src)) {
-            return null;
-        }
-        final Matcher m = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]*)\"")
-                .matcher(src);
-        return m.find() ? m.group(1) : null;
-    }
 }

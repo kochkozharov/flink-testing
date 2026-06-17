@@ -213,15 +213,28 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
         // because it sits on the records flowing into the sink.
         sinkTransform = probeSink(sinkTransform);
 
-        return (Transformation<Object>)
-                applySinkProvider(
-                        sinkTransform,
-                        streamExecEnv,
-                        runtimeProvider,
-                        rowtimeFieldIndex,
-                        sinkParallelism,
-                        config,
-                        classLoader);
+        try {
+            return (Transformation<Object>)
+                    applySinkProvider(
+                            sinkTransform,
+                            streamExecEnv,
+                            runtimeProvider,
+                            rowtimeFieldIndex,
+                            sinkParallelism,
+                            config,
+                            classLoader);
+        } catch (Throwable t) {
+            // SinkRuntimeProvider.consumeDataStream() is not behind the DynamicTableSink proxy
+            // (eg Iceberg legacy FlinkSink schema-name mismatch) — catch here so C4 fires.
+            org.apache.flink.table.planner.audit.EagerAudit.emit(
+                    true,
+                    tableSinkSpec.getContextResolvedTable(),
+                    org.apache.flink.runtime.audit.LifecycleAudit.rootCauseMessage(t),
+                    org.apache.flink.table.planner.audit.EagerAudit.targetColumnNames(
+                            tableSinkSpec.getContextResolvedTable().getResolvedSchema(),
+                            tableSinkSpec.getTargetColumns()));
+            throw t;
+        }
     }
 
     /**
@@ -231,7 +244,9 @@ public abstract class CommonExecSink extends ExecNodeBase<Object>
      */
     private Transformation<RowData> probeSink(Transformation<RowData> input) {
         final java.util.Map<String, String> opts =
-                tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions();
+                org.apache.flink.table.planner.audit.EagerAudit.augmentWithCatalogOptions(
+                        tableSinkSpec.getContextResolvedTable(),
+                        tableSinkSpec.getContextResolvedTable().getResolvedTable().getOptions());
         // SQL-intended modified columns: explicit target list, or all sink columns for plain
         // INSERT INTO sink SELECT ... . Carried to the JM coordinator and reported in C3/C4.
         final java.util.List<String> modifiedColumns =

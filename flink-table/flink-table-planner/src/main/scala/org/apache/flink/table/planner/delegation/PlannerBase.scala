@@ -177,7 +177,7 @@ abstract class PlannerBase(
 
     // Open an eager-audit window: connector proxies (source/sink) and the convertSinkToRel schema
     // catch attribute any plan-translation failure to the exact connector that raised it.
-    EagerAudit.begin()
+    EagerAudit.begin(catalogManager)
     val transformations =
       try {
         val relNodes = modifyOperations.map(translateToRel)

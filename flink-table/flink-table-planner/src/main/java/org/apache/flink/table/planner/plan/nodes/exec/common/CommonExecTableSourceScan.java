@@ -121,75 +121,87 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                 tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
-        if (provider instanceof SourceFunctionProvider) {
-            final SourceFunctionProvider sourceFunctionProvider = (SourceFunctionProvider) provider;
-            final SourceFunction<RowData> function = sourceFunctionProvider.createSourceFunction();
-            sourceTransform =
-                    createSourceFunctionTransformation(
-                            env,
-                            function,
-                            sourceFunctionProvider.isBounded(),
-                            meta.getName(),
-                            outputTypeInfo,
-                            sourceParallelism,
-                            sourceParallelismConfigured);
-            if (function instanceof ParallelSourceFunction && sourceParallelismConfigured) {
+        // ScanRuntimeProvider methods (createSource/produceDataStream/...) aren't behind the
+        // ScanTableSource proxy — catch around the provider-dispatch block so C2 fires.
+        try {
+            if (provider instanceof SourceFunctionProvider) {
+                final SourceFunctionProvider sourceFunctionProvider =
+                        (SourceFunctionProvider) provider;
+                final SourceFunction<RowData> function =
+                        sourceFunctionProvider.createSourceFunction();
+                sourceTransform =
+                        createSourceFunctionTransformation(
+                                env,
+                                function,
+                                sourceFunctionProvider.isBounded(),
+                                meta.getName(),
+                                outputTypeInfo,
+                                sourceParallelism,
+                                sourceParallelismConfigured);
+                if (function instanceof ParallelSourceFunction && sourceParallelismConfigured) {
+                    meta.fill(sourceTransform);
+                    return probeSource(
+                            new SourceTransformationWrapper<>(sourceTransform), outputTypeInfo);
+                } else {
+                    return probeSource(meta.fill(sourceTransform), outputTypeInfo);
+                }
+            } else if (provider instanceof InputFormatProvider) {
+                final InputFormat<RowData, ?> inputFormat =
+                        ((InputFormatProvider) provider).createInputFormat();
+                sourceTransform =
+                        createInputFormatTransformation(
+                                env, inputFormat, outputTypeInfo, meta.getName());
                 meta.fill(sourceTransform);
-                return probeSource(
-                        new SourceTransformationWrapper<>(sourceTransform), outputTypeInfo);
+            } else if (provider instanceof SourceProvider) {
+                final Source<RowData, ?, ?> source = ((SourceProvider) provider).createSource();
+                // TODO: Push down watermark strategy to source scan
+                sourceTransform =
+                        env.fromSource(
+                                        source,
+                                        WatermarkStrategy.noWatermarks(),
+                                        meta.getName(),
+                                        outputTypeInfo)
+                                .getTransformation();
+                meta.fill(sourceTransform);
+            } else if (provider instanceof DataStreamScanProvider) {
+                sourceTransform =
+                        ((DataStreamScanProvider) provider)
+                                .produceDataStream(createProviderContext(config), env)
+                                .getTransformation();
+                meta.fill(sourceTransform);
+                sourceTransform.setOutputType(outputTypeInfo);
+            } else if (provider instanceof TransformationScanProvider) {
+                sourceTransform =
+                        ((TransformationScanProvider) provider)
+                                .createTransformation(createProviderContext(config));
+                meta.fill(sourceTransform);
+                sourceTransform.setOutputType(outputTypeInfo);
             } else {
-                return probeSource(meta.fill(sourceTransform), outputTypeInfo);
+                throw new UnsupportedOperationException(
+                        provider.getClass().getSimpleName() + " is unsupported now.");
             }
-        } else if (provider instanceof InputFormatProvider) {
-            final InputFormat<RowData, ?> inputFormat =
-                    ((InputFormatProvider) provider).createInputFormat();
-            sourceTransform =
-                    createInputFormatTransformation(
-                            env, inputFormat, outputTypeInfo, meta.getName());
-            meta.fill(sourceTransform);
-        } else if (provider instanceof SourceProvider) {
-            final Source<RowData, ?, ?> source = ((SourceProvider) provider).createSource();
-            // TODO: Push down watermark strategy to source scan
-            sourceTransform =
-                    env.fromSource(
-                                    source,
-                                    WatermarkStrategy.noWatermarks(),
-                                    meta.getName(),
-                                    outputTypeInfo)
-                            .getTransformation();
-            meta.fill(sourceTransform);
-        } else if (provider instanceof DataStreamScanProvider) {
-            sourceTransform =
-                    ((DataStreamScanProvider) provider)
-                            .produceDataStream(createProviderContext(config), env)
-                            .getTransformation();
-            meta.fill(sourceTransform);
-            sourceTransform.setOutputType(outputTypeInfo);
-        } else if (provider instanceof TransformationScanProvider) {
-            sourceTransform =
-                    ((TransformationScanProvider) provider)
-                            .createTransformation(createProviderContext(config));
-            meta.fill(sourceTransform);
-            sourceTransform.setOutputType(outputTypeInfo);
-        } else {
-            throw new UnsupportedOperationException(
-                    provider.getClass().getSimpleName() + " is unsupported now.");
-        }
 
-        final Transformation<RowData> result;
-        if (sourceParallelismConfigured) {
-            result =
-                    applySourceTransformationWrapper(
-                            sourceTransform,
-                            planner.getFlinkContext().getClassLoader(),
-                            outputTypeInfo,
-                            config,
-                            tableSource.getChangelogMode(),
-                            sourceParallelism);
-        } else {
-            result = sourceTransform;
+            final Transformation<RowData> result;
+            if (sourceParallelismConfigured) {
+                result =
+                        applySourceTransformationWrapper(
+                                sourceTransform,
+                                planner.getFlinkContext().getClassLoader(),
+                                outputTypeInfo,
+                                config,
+                                tableSource.getChangelogMode(),
+                                sourceParallelism);
+            } else {
+                result = sourceTransform;
+            }
+            return probeSource(result, outputTypeInfo);
+        } catch (Throwable t) {
+            org.apache.flink.table.planner.audit.EagerAudit.emit(
+                    false,
+                    tableSourceSpec.getContextResolvedTable(),
+                    org.apache.flink.runtime.audit.LifecycleAudit.rootCauseMessage(t));
+            throw t;
         }
-        return probeSource(result, outputTypeInfo);
     }
 
     /**
@@ -203,7 +215,9 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
     private Transformation<RowData> probeSource(
             Transformation<RowData> input, InternalTypeInfo<RowData> outType) {
         final java.util.Map<String, String> opts =
-                tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions();
+                org.apache.flink.table.planner.audit.EagerAudit.augmentWithCatalogOptions(
+                        tableSourceSpec.getContextResolvedTable(),
+                        tableSourceSpec.getContextResolvedTable().getResolvedTable().getOptions());
         final org.apache.flink.streaming.runtime.operators.lifecycle.LifecycleProbeFactory<RowData>
                 factory =
                         new org.apache.flink.streaming.runtime.operators.lifecycle

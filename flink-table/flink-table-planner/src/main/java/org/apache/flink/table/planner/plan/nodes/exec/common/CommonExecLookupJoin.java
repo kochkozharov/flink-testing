@@ -347,11 +347,12 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData> {
         final java.util.Map<String, String> opts;
         if (temporalTable
                 instanceof org.apache.flink.table.planner.plan.schema.TableSourceTable) {
-            opts =
+            final org.apache.flink.table.catalog.ContextResolvedTable ctx =
                     ((org.apache.flink.table.planner.plan.schema.TableSourceTable) temporalTable)
-                            .contextResolvedTable()
-                            .getResolvedTable()
-                            .getOptions();
+                            .contextResolvedTable();
+            opts =
+                    org.apache.flink.table.planner.audit.EagerAudit.augmentWithCatalogOptions(
+                            ctx, ctx.getResolvedTable().getOptions());
         } else {
             opts = java.util.Collections.emptyMap();
         }

@@ -255,13 +255,13 @@ public final class ConnectorIntrospection {
         if (tableName instanceof String) {
             opts.put("catalog-table", (String) tableName);
         }
-        // TableLoader$CatalogTableLoader.identifier carries the full "db.table" identifier.
         final Object loader = readField(source, "tableLoader");
         if (loader != null) {
             final Object identifier = readField(loader, "identifier");
             if (identifier != null) {
                 opts.put("table", identifier.toString());
             }
+            icebergCatalogProperties(loader, opts);
         }
     }
 
@@ -277,6 +277,28 @@ public final class ConnectorIntrospection {
                 // Surface the table part separately for the {connector}:{objectName} format.
                 final int dot = full.lastIndexOf('.');
                 opts.put("catalog-table", dot >= 0 ? full.substring(dot + 1) : full);
+            }
+            icebergCatalogProperties(loader, opts);
+        }
+    }
+
+    /**
+     * Pulls uri/warehouse from {@code CatalogTableLoader.catalogLoader.properties} — gives
+     * DataStream Iceberg jobs the host info that SQL gets via the catalog descriptor.
+     */
+    private static void icebergCatalogProperties(Object tableLoader, Map<String, String> opts) {
+        final Object catalogLoader = readField(tableLoader, "catalogLoader");
+        if (catalogLoader == null) {
+            return;
+        }
+        final Object props = readField(catalogLoader, "properties");
+        if (!(props instanceof Map)) {
+            return;
+        }
+        for (String key : new String[] {"uri", "warehouse"}) {
+            final Object v = ((Map<?, ?>) props).get(key);
+            if (v instanceof String && !((String) v).isEmpty()) {
+                opts.putIfAbsent(key, (String) v);
             }
         }
     }
