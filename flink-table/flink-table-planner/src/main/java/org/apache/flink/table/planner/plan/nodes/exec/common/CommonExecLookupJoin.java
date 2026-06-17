@@ -241,6 +241,30 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData> {
         RelOptTable temporalTable =
                 temporalTableSourceSpec.getTemporalTable(
                         planner.getFlinkContext(), unwrapTypeFactory(planner));
+        try {
+            return doCreateJoinTransformation(
+                    planner, config, upsertMaterialize, lookupKeyContainsPrimaryKey, temporalTable);
+        } catch (Throwable t) {
+            // LookupJoinUtil.getLookupFunction()/createSyncLookupJoin()/createAsyncLookupJoin()
+            // build connector-side lookup providers — failures escape the ScanTableSource proxy.
+            if (temporalTable
+                    instanceof org.apache.flink.table.planner.plan.schema.TableSourceTable) {
+                org.apache.flink.table.planner.audit.EagerAudit.emit(
+                        false,
+                        ((org.apache.flink.table.planner.plan.schema.TableSourceTable) temporalTable)
+                                .contextResolvedTable(),
+                        org.apache.flink.runtime.audit.LifecycleAudit.rootCauseMessage(t));
+            }
+            throw t;
+        }
+    }
+
+    private Transformation<RowData> doCreateJoinTransformation(
+            PlannerBase planner,
+            ExecNodeConfig config,
+            boolean upsertMaterialize,
+            boolean lookupKeyContainsPrimaryKey,
+            RelOptTable temporalTable) {
         // validate whether the node is valid and supported.
         validate(temporalTable);
         final ExecEdge inputEdge = getInputEdges().get(0);
